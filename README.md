@@ -6,7 +6,7 @@
 
 ![agent-mcts searching, applying the best branch, and the resulting diff](demo/demo.gif)
 
-> **Status: v0.1.** Early but real — the full loop (search → live tree → apply) works today with Claude Code. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
+> **Status: v0.2.** Early but real — the full loop (search → live tree → apply) works today with Claude Code and Codex CLI. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
 ## Why
 
@@ -71,7 +71,7 @@ agent-mcts apply n2    # ...or pick a different branch
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
-- **Value function = your tests.** Exit 0 scores 1.0; a pytest-style summary earns partial credit by pass ratio, and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. (LLM-as-judge lands in v0.2.)
+- **Value function = your tests.** Exit 0 scores 1.0; a pytest-style summary earns partial credit by pass ratio, and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. (LLM-as-judge lands in v0.3.)
 - **Every node is a git branch** (`agent-mcts/<run>/<node>`), so `apply` is an ordinary squash merge and everything is auditable after the fact. Worktrees are disposable; branches are the record.
 - **Every state change is journaled** (append-only jsonl per run), so an interrupted search is still a valid, inspectable tree.
 
@@ -127,9 +127,9 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 ## Roadmap
 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
-- [ ] **v0.2** — LLM-as-judge value fn, `resume`, parallel expansion
-- [ ] **v0.3** — Kimi CLI adapter, in-agent activation (`/tree` inside Claude Code via MCP)
-- [ ] **v0.4** — search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
+- [x] **v0.2** — Codex CLI adapter, episode-count budget for agents that report no dollar cost, recoverable timed-out and interrupted episodes
+- [ ] **v0.3** — LLM-as-judge value fn, `resume`, parallel expansion, Kimi CLI adapter
+- [ ] **v0.4** — in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
 ## Contributing
 
