@@ -40,6 +40,7 @@ class Node(BaseModel):
     judge_score: float | None = None
     visits: int = 0  # MCTS N
     value_sum: float = 0.0  # MCTS W
+    value_max: float | None = None  # best value backed up through this node, if any
 
     cost_usd: float | None = 0.0  # None: the backend never reports a dollar figure
     cost_known: bool = True  # False: the figure was lost after the agent started
@@ -130,4 +131,5 @@ class Tree:
         for node in updated:
             node.visits += 1
             node.value_sum += value
+            node.value_max = value if node.value_max is None else max(node.value_max, value)
         return updated
