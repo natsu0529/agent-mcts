@@ -47,18 +47,55 @@ def _last_int(pattern: re.Pattern[str], output: str) -> int:
     return int(matches[-1]) if matches else 0
 
 
-def _pass_ratio(output: str) -> float:
-    passed = _last_int(_PASSED, output)
-    total = passed + _last_int(_FAILED, output) + _last_int(_ERRORS, output)
+_CARGO_RESULT = re.compile(r"test result: \w+\. (\d+) passed; (\d+) failed")
+_JUNIT = re.compile(
+    r"Tests run:\s*(\d+),\s*Failures:\s*(\d+)(?:,\s*Errors:\s*(\d+))?(?:,\s*Skipped:\s*(\d+))?"
+)
+_GO_TEST = re.compile(r"(?m)^\s*--- (PASS|FAIL):")
+_GO_PACKAGE = re.compile(r"(?m)^(ok|FAIL)\s+\S+")
+
+
+def _ratio(passed: int, total: int) -> float:
     return passed / total if total else 0.0
+
+
+def _pass_ratio(output: str) -> float:
+    """Fraction of tests that passed, read from the runner's own summary.
+
+    Each runner reports differently, so the recognizably runner-specific formats are
+    tried first and the generic "N passed / N failed" wording (pytest, jest) last.
+    Unrecognized output scores 0.0: no partial credit without evidence.
+    """
+    # cargo prints one result line per test binary; the suite is their sum.
+    cargo = _CARGO_RESULT.findall(output)
+    if cargo:
+        passed = sum(int(p) for p, _ in cargo)
+        return _ratio(passed, passed + sum(int(f) for _, f in cargo))
+
+    # JUnit-style (Maven, Gradle): per-class lines, then the total — the last line wins.
+    junit = _JUNIT.findall(output)
+    if junit:
+        run, failures, errors, skipped = (int(n or 0) for n in junit[-1])
+        return _ratio(run - failures - errors - skipped, run - skipped)
+
+    # go test -v marks every test; without -v only package verdicts are printed.
+    go_tests = _GO_TEST.findall(output)
+    if "PASS" in go_tests:
+        return _ratio(go_tests.count("PASS"), len(go_tests))
+    go_packages = _GO_PACKAGE.findall(output)
+    if go_packages:
+        return _ratio(go_packages.count("ok"), len(go_packages))
+
+    passed = _last_int(_PASSED, output)
+    return _ratio(passed, passed + _last_int(_FAILED, output) + _last_int(_ERRORS, output))
 
 
 class CommandValueFunction:
     """Run a shell command (typically the test suite) in the worktree.
 
-    Exit 0 → 1.0. On failure, a pytest-style summary ("2 failed, 3 passed")
-    yields the pass ratio, so partial progress is rewarded; an unparseable
-    failure scores 0.0.
+    Exit 0 → 1.0. On failure, the runner's summary (pytest, jest, cargo test, go test,
+    JUnit-style) yields the pass ratio, so partial progress is rewarded; an
+    unparseable failure scores 0.0.
     """
 
     def __init__(self, command: str, *, timeout_s: float = 600.0) -> None:

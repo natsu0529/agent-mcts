@@ -339,3 +339,29 @@ def test_config_rejects_zero_weights(judged_repo: Path) -> None:
     result = runner.invoke(cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD])
     assert result.exit_code == 1
     assert "cannot both be zero" in result.output
+
+
+def test_green_baseline_without_judge_warns(project_repo: Path) -> None:
+    result = runner.invoke(cli.app, ["run", "add a feature", "-y", "-n", "2", "--value", "true"])
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "already passes on the untouched repository" in flat
+    assert "--judge" in flat
+
+
+def test_failing_baseline_does_not_warn(project_repo: Path) -> None:
+    assert "already passes" not in " ".join(do_run(["-n", "1"]).split())
+
+
+def test_green_baseline_with_judge_does_not_warn(judged_repo: Path) -> None:
+    result = runner.invoke(
+        cli.app, ["run", "add a feature", "-y", "-n", "1", "--value", "true", "--judge"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "already passes" not in " ".join(result.output.split())
+
+
+def test_show_rounds_the_reward(judged_repo: Path) -> None:
+    do_run(["-n", "1", "--judge"])
+    shown = runner.invoke(cli.app, ["show", "n1"]).output
+    assert "reward=0.90 " in shown

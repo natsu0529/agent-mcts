@@ -71,7 +71,7 @@ agent-mcts apply n2    # ...or pick a different branch
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
-- **Value function = your tests.** Exit 0 scores 1.0; a pytest-style summary earns partial credit by pass ratio, and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--judge` to have an LLM score each attempt's diff as well — see [LLM judge](#llm-judge).
+- **Value function = your tests.** Exit 0 scores 1.0; a failing run earns partial credit by pass ratio (read from pytest, jest, cargo test, go test and JUnit-style summaries), and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--judge` to have an LLM score each attempt's diff as well — see [LLM judge](#llm-judge).
 - **Every node is a git branch** (`agent-mcts/<run>/<node>`), so `apply` is an ordinary squash merge and everything is auditable after the fact. Worktrees are disposable; branches are the record.
 - **Every state change is journaled** (append-only jsonl per run), so an interrupted search is still a valid, inspectable tree.
 

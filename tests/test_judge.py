@@ -251,7 +251,7 @@ def test_unchanged_tree_is_not_sent_to_the_judge(repo: Path) -> None:
     assert backend.calls == []  # no spend on an empty diff
     assert result.judge_score == 0.0
     assert result.score == pytest.approx(0.5)  # green tests alone are worth half
-    assert "no changes" in result.detail
+    assert result.detail == "3 passed"  # no judge ran, so nothing is attributed to one
 
 
 def test_failed_judge_falls_back_to_tests_without_failing(repo: Path) -> None:

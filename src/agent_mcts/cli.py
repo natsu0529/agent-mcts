@@ -230,6 +230,18 @@ def run(
     console.print(
         f"\nSearch finished: {engine.episodes} episodes, {_spend_summary(engine)} · run {run_id}"
     )
+    root = tree.root
+    if (
+        judge_adapter is None
+        and root is not None
+        and (root.reward or 0.0) >= cfg.search.success_threshold
+    ):
+        console.print(
+            "[yellow]warning:[/] the value command already passes on the untouched "
+            "repository, so it cannot tell attempts apart: the search stops at the first "
+            "attempt that keeps it passing, whatever that attempt did. Re-run with "
+            "[bold]--judge[/], or use a value command that fails until the task is done."
+        )
     best = tree.best()
     if best is None or best.parent_id is None:
         console.print("No attempt beat the baseline. Inspect with: [bold]agent-mcts show[/]")
@@ -303,7 +315,8 @@ def show(
     found = tree.nodes.get(node)
     if found is None:
         _fail(f"no node {node} in run {tree.meta.run_id}")
-    status = f"{found.status.value}  reward={found.reward}  Q={found.q:.2f}  N={found.visits}"
+    reward = "-" if found.reward is None else f"{found.reward:.2f}"
+    status = f"{found.status.value}  reward={reward}  Q={found.q:.2f}  N={found.visits}"
     if found.test_score is not None:
         judged = "-" if found.judge_score is None else f"{found.judge_score:.2f}"
         status += f"  (tests={found.test_score:.2f} judge={judged})"

@@ -201,7 +201,7 @@ class HybridValueFunction:
         if not diff.strip():
             return self._combine(
                 tested,
-                JudgeVerdict(score=0.0, explanation="no changes relative to the starting point"),
+                JudgeVerdict(score=0.0),
                 judged=False,
             )
         return self._combine(tested, await self.judge.score(diff=diff, test_output=tested.detail))
@@ -214,7 +214,12 @@ class HybridValueFunction:
         if judge_score is None:
             note = f"Judge unavailable ({verdict.error}); scored on tests alone."
         elif not judged:
-            note = f"Judge: {verdict.explanation}."
+            # No judge ran, so do not label this as a judge's opinion. The root's detail
+            # is quoted to first attempts as the baseline; an untouched tree gets the
+            # test output alone, exactly as without a judge.
+            return tested.model_copy(
+                update={"score": score, "test_score": tested.score, "judge_score": 0.0}
+            )
         else:
             reward = round(judge_score * 200 - 100)
             note = f"Judge ({reward:+d}/100): {verdict.explanation[:_MAX_EXPLANATION_CHARS]}"
