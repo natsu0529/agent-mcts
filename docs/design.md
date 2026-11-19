@@ -111,8 +111,20 @@ Decisions worth knowing:
 - **The explanation leads `eval_detail`,** so it survives prompt clipping and reaches the
   children's revision prompts (the paper's hindsight feedback).
 
-Not done yet: a separate final-selection step (the paper's discriminator), judging
-siblings relative to each other, and the paper's depth terms in UCT.
+### Final selection is a separate step
+
+The reward guides the search; it is a poor tiebreaker. `FinalSelector` runs once the
+search ends: the attempts within `select_margin` of the best (at most `select_top_k`) go
+to one listwise judge call, each shown by its cumulative diff and its test output but not
+its earlier critique, so the first opinion does not anchor the second. The choice is
+appended to the journal as a `selection` record and `Tree.best()` returns it.
+
+A selection is only valid for the tree it was made on. Adding a node clears it, in
+memory and on journal replay, and the next run end makes a new one. Its cost stays on
+the books either way. SWE-Search uses a multi-agent debate here; one call is the cheap
+version of the same separation.
+
+Not done yet: judging siblings relative to each other during the search.
 
 ## Persistence: append-only journal
 

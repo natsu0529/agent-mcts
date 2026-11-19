@@ -28,6 +28,11 @@ class ValueConfig(BaseModel):
     judge_timeout_s: float = Field(default=300.0, gt=0)
     w_test: float = Field(default=0.5, ge=0)
     w_judge: float = Field(default=0.5, ge=0)
+    # With the judge on: after the search, compare the top nodes head to head and let
+    # that decide what `apply` offers (see `core.judge.FinalSelector`).
+    select: bool = True
+    select_top_k: int = Field(default=3, ge=2)
+    select_margin: float = Field(default=0.1, ge=0)  # only nodes this close to the best
 
     @model_validator(mode="after")
     def _weights_not_both_zero(self) -> Self:

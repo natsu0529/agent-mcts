@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from agent_mcts.adapters.base import AdapterError, AgentBackend, TokenUsage
+from agent_mcts.core.model import Node, Selection, Tree
 from agent_mcts.core.value import Evaluation, ValueFunction
 
 _REWARD = re.compile(r"<Reward>\s*([+-]?\d+)\s*</Reward>", re.IGNORECASE)
@@ -115,45 +116,131 @@ def judge_prompt(task: str, diff: str, test_output: str) -> str:
     )
 
 
+class Candidate(BaseModel):
+    """One solution in a head-to-head comparison."""
+
+    label: str
+    diff: str
+    test_output: str = ""
+
+
+class Ranking(BaseModel):
+    """One ranking call. `order` is None when the judge produced nothing usable."""
+
+    order: list[str] | None = None  # candidate labels, best first
+    explanation: str = ""
+    error: str = ""
+    cost_usd: float | None = 0.0
+    cost_known: bool = True
+    usage: TokenUsage | None = None
+
+
+_RANKING = re.compile(r"<Ranking>(.*?)</Ranking>", re.IGNORECASE | re.DOTALL)
+
+
+def parse_ranking(text: str, labels: list[str]) -> tuple[list[str], str] | None:
+    """Extract `(labels best-first, explanation)`, or None unless it ranks every label once."""
+    rankings = _RANKING.findall(text)
+    if not rankings:
+        return None
+    order = [part.strip() for part in re.split(r"[,>\n]", rankings[-1]) if part.strip()]
+    if sorted(order) != sorted(labels):
+        return None
+    explanations = _EXPLANATION.findall(text)
+    explanation = explanations[-1] if explanations else _RANKING.sub("", text)
+    return order, explanation.strip()
+
+
+def ranking_prompt(task: str, candidates: list[Candidate]) -> str:
+    per_candidate = max(2_000, _MAX_DIFF_CHARS // len(candidates))
+    blocks: list[str] = []
+    for candidate in candidates:
+        tests = candidate.test_output.strip()[-1_500:] or "(no output)"
+        blocks.append(
+            f"\n=== CANDIDATE {candidate.label} ===\n"
+            f"```diff\n{render_diff(candidate.diff, max_chars=per_candidate)}\n```\n"
+            f"Evaluation command output for {candidate.label}:\n```\n{tests}\n```\n"
+        )
+    labels = ", ".join(c.label for c in candidates)
+    return (
+        "You are the final judge in a tree search over solutions to a coding task. "
+        "Compare the candidate solutions below against each other and rank them. Do not "
+        "modify any files and do not try to run anything: judge only from what is shown.\n"
+        f"\nTASK:\n{task}\n"
+        f"{''.join(blocks)}"
+        "\nRank by which change you would rather merge: it addresses the task, is "
+        "complete and correct including implied edge cases, and avoids collateral damage. "
+        "A candidate that deleted, skipped or weakened tests to pass ranks last.\n"
+        "\nReply in exactly this format, listing every candidate once, best first:\n"
+        "<Explanation>One paragraph: what decides the order.</Explanation>\n"
+        f"<Ranking>{labels}</Ranking>"
+    )
+
+
 class LLMJudge:
-    """Asks an agent backend to score a candidate; never raises on judge failure."""
+    """Asks an agent backend to score or rank candidates; never raises on judge failure."""
 
     def __init__(self, adapter: AgentBackend, *, task: str) -> None:
         self.adapter = adapter
         self.task = task
 
-    async def score(self, *, diff: str, test_output: str) -> JudgeVerdict:
-        prompt = judge_prompt(self.task, diff, test_output)
+    async def _ask(self, prompt: str) -> tuple[str | None, JudgeVerdict]:
+        """Run one judge episode: `(reply or None, a verdict carrying spend and error)`."""
         with tempfile.TemporaryDirectory(prefix="agent-mcts-judge-") as scratch:
             # Some agent CLIs refuse to run outside a git repository.
             subprocess.run(["git", "init", "-q"], cwd=scratch, capture_output=True, check=False)
             try:
                 result = await self.adapter.run_episode(prompt, Path(scratch))
             except AdapterError as exc:
-                return JudgeVerdict(error=f"judge failed: {exc}", cost_known=exc.cost_known)
+                failed = JudgeVerdict(error=f"judge failed: {exc}", cost_known=exc.cost_known)
+                return None, failed
         spent = JudgeVerdict(
             cost_usd=result.cost_usd, cost_known=result.cost_known, usage=result.usage
         )
         if result.is_error:
             error = f"judge reported an error: {result.summary[:500]}"
-            return spent.model_copy(update={"error": error})
-        parsed = parse_verdict(result.summary)
+            return None, spent.model_copy(update={"error": error})
+        return result.summary, spent
+
+    async def score(self, *, diff: str, test_output: str) -> JudgeVerdict:
+        reply, spent = await self._ask(judge_prompt(self.task, diff, test_output))
+        if reply is None:
+            return spent
+        parsed = parse_verdict(reply)
         if parsed is None:
             return spent.model_copy(update={"error": "judge reply had no <Reward> tag"})
         score, explanation = parsed
         return spent.model_copy(update={"score": score, "explanation": explanation})
 
+    async def rank(self, candidates: list[Candidate]) -> Ranking:
+        """Rank candidates against each other in one call (listwise)."""
+        reply, spent = await self._ask(ranking_prompt(self.task, candidates))
+        ranking = Ranking(
+            error=spent.error,
+            cost_usd=spent.cost_usd,
+            cost_known=spent.cost_known,
+            usage=spent.usage,
+        )
+        if reply is None:
+            return ranking
+        parsed = parse_ranking(reply, [c.label for c in candidates])
+        if parsed is None:
+            error = "judge reply did not rank every candidate exactly once"
+            return ranking.model_copy(update={"error": error})
+        order, explanation = parsed
+        return ranking.model_copy(update={"order": order, "explanation": explanation})
 
-async def cumulative_diff(workdir: Path, base_commit: str) -> str:
-    """Diff from the run's base commit to the worktree's HEAD (the node snapshot)."""
+
+async def diff_between(repo: Path, base: str, head: str) -> str:
+    """`git diff base head`, run anywhere inside the repository."""
     proc = await asyncio.create_subprocess_exec(
         "git",
         "diff",
         "--no-color",
         "--no-ext-diff",
-        base_commit,
-        "HEAD",
-        cwd=workdir,
+        base,
+        head,
+        cwd=repo,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -161,6 +248,11 @@ async def cumulative_diff(workdir: Path, base_commit: str) -> str:
     if proc.returncode != 0:
         raise RuntimeError(stderr.decode(errors="replace").strip() or "git diff failed")
     return stdout.decode(errors="replace")
+
+
+async def cumulative_diff(workdir: Path, base_commit: str) -> str:
+    """Diff from the run's base commit to the worktree's HEAD (the node snapshot)."""
+    return await diff_between(workdir, base_commit, "HEAD")
 
 
 class HybridValueFunction:
@@ -234,4 +326,78 @@ class HybridValueFunction:
             cost_usd=verdict.cost_usd,
             cost_known=verdict.cost_known,
             usage=verdict.usage,
+        )
+
+
+_TESTS_HEADER = re.compile(r"\n\nTests \(\d\.\d\d\):\n")
+
+
+def evidence_part(detail: str) -> str:
+    """The test output inside a detail written by `HybridValueFunction._combine`.
+
+    A comparison between nodes should read the evidence, not the earlier per-node
+    critiques, or the first opinion anchors the second.
+    """
+    parts = _TESTS_HEADER.split(detail, maxsplit=1)
+    return parts[1] if len(parts) == 2 else detail
+
+
+class FinalSelector:
+    """Picks the node `apply` offers by comparing the top-scoring nodes head to head.
+
+    Per-node judge scores are noisy: two good attempts routinely land within a point or
+    two of each other, and then the higher number is not evidence. SWE-Search separates
+    the value that guides the search from a discriminator that makes the final choice;
+    this is that step, as one listwise judge call.
+    """
+
+    def __init__(
+        self,
+        judge: LLMJudge,
+        *,
+        repo: Path,
+        base_commit: str,
+        top_k: int = 3,
+        margin: float = 0.1,
+    ) -> None:
+        self.judge = judge
+        self.repo = repo
+        self.base_commit = base_commit
+        self.top_k = top_k
+        self.margin = margin
+
+    def contenders(self, tree: Tree) -> list[Node]:
+        """Up to `top_k` attempts whose reward is within `margin` of the best one."""
+        attempts = [n for n in tree.ranked() if n.parent_id is not None and n.branch]
+        if not attempts:
+            return []
+        floor = (attempts[0].reward or 0.0) - self.margin
+        return [n for n in attempts if (n.reward or 0.0) >= floor][: self.top_k]
+
+    async def select(self, tree: Tree) -> Selection | None:
+        """Compare the contenders; None when there is nothing to choose between."""
+        contenders = self.contenders(tree)
+        if len(contenders) < 2:
+            return None
+        ids = [n.id for n in contenders]
+        try:
+            candidates = [
+                Candidate(
+                    label=n.id,
+                    diff=await diff_between(self.repo, self.base_commit, n.branch or ""),
+                    test_output=evidence_part(n.eval_detail),
+                )
+                for n in contenders
+            ]
+        except (OSError, RuntimeError) as exc:
+            return Selection(candidates=ids, error=f"could not diff the candidates: {exc}")
+        ranking = await self.judge.rank(candidates)
+        return Selection(
+            node_id=ranking.order[0] if ranking.order else None,
+            candidates=ranking.order or ids,
+            explanation=ranking.explanation,
+            error=ranking.error,
+            cost_usd=ranking.cost_usd,
+            cost_known=ranking.cost_known,
+            usage=ranking.usage,
         )

@@ -11,10 +11,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agent_mcts.core.model import Node, RunMeta, Tree
+from agent_mcts.core.model import Node, RunMeta, Selection, Tree
 
 _KIND_META = "meta"
 _KIND_NODE = "node"
+_KIND_SELECTION = "selection"
 
 
 def _append(path: Path, kind: str, payload: dict[str, Any]) -> None:
@@ -31,10 +32,16 @@ def append_node(path: Path, node: Node) -> None:
     _append(path, _KIND_NODE, node.model_dump(mode="json"))
 
 
+def append_selection(path: Path, selection: Selection) -> None:
+    _append(path, _KIND_SELECTION, selection.model_dump(mode="json"))
+
+
 def load(path: Path) -> Tree:
     """Rebuild a tree by replaying the journal (last snapshot wins per node)."""
     meta: RunMeta | None = None
     snapshots: dict[str, Node] = {}
+    selections: list[Selection] = []
+    current: Selection | None = None
     with path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -46,7 +53,12 @@ def load(path: Path) -> Tree:
                 meta = RunMeta.model_validate(record)
             elif kind == _KIND_NODE:
                 node = Node.model_validate(record)
+                if node.id not in snapshots:
+                    current = None  # the search went on after that selection
                 snapshots[node.id] = node
+            elif kind == _KIND_SELECTION:
+                current = Selection.model_validate(record)
+                selections.append(current)
             else:
                 raise ValueError(f"unknown journal record kind: {kind!r}")
     if meta is None:
@@ -63,4 +75,6 @@ def load(path: Path) -> Tree:
                 progressed = True
         if not progressed:
             raise ValueError(f"journal has orphaned nodes: {sorted(remaining)}")
+    tree.selections = selections
+    tree.selection = current
     return tree
