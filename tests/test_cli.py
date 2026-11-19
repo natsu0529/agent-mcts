@@ -403,3 +403,25 @@ def test_final_comparison_can_be_turned_off(judged_repo: Path) -> None:
     output = " ".join(do_run(["-n", "2", "--judge"]).split())
     assert FakeJudgingAdapter.rank_calls == 0
     assert "Final comparison" not in output
+
+
+def test_long_final_comparison_reasoning_is_clipped_in_the_run_summary(
+    judged_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    long_reason = "n2 is tidier. " + "It also handles more cases. " * 40 + "THE END"
+
+    async def verbose(
+        self: FakeJudgingAdapter, prompt: str, workdir: Path, *, resume_session: str | None = None
+    ) -> EpisodeResult:
+        if prompt.startswith("You are the final judge"):
+            reply = f"<Explanation>{long_reason}</Explanation><Ranking>n2, n1</Ranking>"
+            return EpisodeResult(session_id="rank", summary=reply, cost_usd=0.05)
+        return await original(self, prompt, workdir, resume_session=resume_session)
+
+    original = FakeJudgingAdapter.run_episode
+    monkeypatch.setattr(FakeJudgingAdapter, "run_episode", verbose)
+
+    summary = " ".join(do_run(["-n", "2", "--judge"]).split())
+    assert "Final comparison: n2 chosen over n1. n2 is tidier." in summary
+    assert "THE END" not in summary and "full text: agent-mcts show" in summary
+    assert "THE END" in " ".join(runner.invoke(cli.app, ["show"]).output.split())

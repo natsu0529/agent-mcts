@@ -33,6 +33,9 @@ class ValueConfig(BaseModel):
     select: bool = True
     select_top_k: int = Field(default=3, ge=2)
     select_margin: float = Field(default=0.1, ge=0)  # only nodes this close to the best
+    # With the judge on: rank each sibling group head to head as attempts arrive and use
+    # the standing in selection. One extra judge call per attempt after a group's first.
+    relative: bool = False
 
     @model_validator(mode="after")
     def _weights_not_both_zero(self) -> Self:

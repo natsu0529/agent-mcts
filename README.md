@@ -134,6 +134,8 @@ Tests alone stop being useful once they pass: on an already-green suite every at
 
 - **Final comparison.** Per-node scores are noisy, and two good attempts often land within a point of each other. When the search ends, the attempts within `select_margin` (0.1) of the best, up to `select_top_k` (3), are compared head to head in one more judge call, and its pick is what `apply` offers. With a clear winner there is nothing to compare and no call is made. Turn it off with `select = false`.
 
+- **Sibling ranking (optional).** With `relative = true`, the attempts that share a parent are also ranked against each other each time a new one arrives, and that standing counts in choosing which one to revise next (`[search] sibling_weight`, 0.5). It does not change rewards or what `apply` offers. It costs one more judge call per attempt after a group's first.
+
 `agent-mcts show <node>` prints both components and the critique.
 
 ### Running in parallel

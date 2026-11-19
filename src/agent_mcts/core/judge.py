@@ -401,3 +401,33 @@ class FinalSelector:
             cost_known=ranking.cost_known,
             usage=ranking.usage,
         )
+
+
+class SiblingRanker:
+    """Ranks the attempts that share a parent against each other.
+
+    An absolute judge score drifts from call to call, while UCT only ever compares
+    children of one parent. Ranking those children in a single call compares like with
+    like: same starting point, same prompt, same judge reply. This is the
+    group-relative idea from GRPO, used for selection only; nothing is trained.
+    """
+
+    def __init__(self, judge: LLMJudge, *, repo: Path) -> None:
+        self.judge = judge
+        self.repo = repo
+
+    async def rank(self, parent: Node, children: list[Node]) -> Ranking:
+        """Rank `children` by what each changed relative to `parent`."""
+        try:
+            candidates = [
+                Candidate(
+                    label=child.id,
+                    diff=await diff_between(self.repo, parent.branch or "", child.branch or "")
+                    or "(no changes relative to the shared starting point)",
+                    test_output=evidence_part(child.eval_detail),
+                )
+                for child in children
+            ]
+        except (OSError, RuntimeError) as exc:
+            return Ranking(error=f"could not diff the siblings: {exc}")
+        return await self.judge.rank(candidates)

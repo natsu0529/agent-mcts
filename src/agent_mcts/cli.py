@@ -18,7 +18,12 @@ from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, AgentBackend, ClaudeCodeAdapter, CodexCliAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
-from agent_mcts.core.judge import FinalSelector, HybridValueFunction, LLMJudge
+from agent_mcts.core.judge import (
+    FinalSelector,
+    HybridValueFunction,
+    LLMJudge,
+    SiblingRanker,
+)
 from agent_mcts.core.model import Node, NodeStatus, RunMeta, Tree
 from agent_mcts.core.value import CommandValueFunction, ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
@@ -226,7 +231,8 @@ def _print_plan(
             )
     console.print(
         f"Agent: [bold]{backends.agent_name}[/] · "
-        f"Value: [bold]{cfg.value.command}{backends.judge_label}[/] · "
+        f"Value: [bold]{cfg.value.command}{backends.judge_label}"
+        f"{' + sibling ranking' if backends.judge and cfg.value.relative else ''}[/] · "
         f"Budget: {budget} · Timeout: {timeout_s:.0f}s/episode"
         + (f" · Parallel: {cfg.search.parallelism}" if cfg.search.parallelism > 1 else "")
     )
@@ -244,6 +250,7 @@ def _build_engine(
     assert cfg.value.command is not None
     value_fn: ValueFunction = CommandValueFunction(cfg.value.command)
     selector: FinalSelector | None = None
+    sibling_ranker: SiblingRanker | None = None
     if backends.judge is not None:
         judge = LLMJudge(backends.judge, task=meta.task)
         base_commit = meta.base_commit or project.head_commit(repo)
@@ -254,6 +261,8 @@ def _build_engine(
             w_test=cfg.value.w_test,
             w_judge=cfg.value.w_judge,
         )
+        if cfg.value.relative:
+            sibling_ranker = SiblingRanker(judge, repo=repo)
         if cfg.value.select:
             selector = FinalSelector(
                 judge,
@@ -271,6 +280,7 @@ def _build_engine(
         config=cfg.search,
         accepted_unknown_cost=accepted_unknown_cost,
         selector=selector,
+        sibling_ranker=sibling_ranker,
     )
 
 
@@ -321,7 +331,7 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
         console.print("Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]")
 
 
-def _print_selection(tree: Tree) -> None:
+def _print_selection(tree: Tree, *, full: bool = False) -> None:
     selection = tree.selection
     if selection is None:
         return
@@ -332,9 +342,12 @@ def _print_selection(tree: Tree) -> None:
         )
         return
     others = ", ".join(c for c in selection.candidates if c != selection.node_id)
+    reason = " ".join(selection.explanation.split())
+    if not full and len(reason) > 300:
+        # The run summary stays scannable; `agent-mcts show` prints the whole reasoning.
+        reason = reason[:300].rsplit(" ", 1)[0] + " … (full text: agent-mcts show)"
     console.print(
-        f"Final comparison: [bold]{selection.node_id}[/] chosen over {others}. "
-        f"{escape(selection.explanation)}"
+        f"Final comparison: [bold]{selection.node_id}[/] chosen over {others}. {escape(reason)}"
     )
 
 
@@ -500,7 +513,7 @@ def show(
     if node is None:
         console.print(f"task: {tree.meta.task}  ·  run {tree.meta.run_id}")
         console.print(tui.render_tree(tree))
-        _print_selection(tree)
+        _print_selection(tree, full=True)
         return
     found = tree.nodes.get(node)
     if found is None:
@@ -510,6 +523,8 @@ def show(
     if found.test_score is not None:
         judged = "-" if found.judge_score is None else f"{found.judge_score:.2f}"
         status += f"  (tests={found.test_score:.2f} judge={judged})"
+    if found.sibling_score is not None:
+        status += f"  among siblings={found.sibling_score:.2f}"
     for title, body in (
         ("status", status),
         ("branch", found.branch or "-"),
