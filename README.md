@@ -71,7 +71,7 @@ agent-mcts apply n2    # ...or pick a different branch
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
-- **Value function = your tests.** Exit 0 scores 1.0; a pytest-style summary earns partial credit by pass ratio, and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. (LLM-as-judge lands in v0.3.)
+- **Value function = your tests.** Exit 0 scores 1.0; a pytest-style summary earns partial credit by pass ratio, and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--judge` to have an LLM score each attempt's diff as well — see [LLM judge](#llm-judge).
 - **Every node is a git branch** (`agent-mcts/<run>/<node>`), so `apply` is an ordinary squash merge and everything is auditable after the fact. Worktrees are disposable; branches are the record.
 - **Every state change is journaled** (append-only jsonl per run), so an interrupted search is still a valid, inspectable tree.
 
@@ -98,6 +98,10 @@ allowed_tools = ["Bash(go test *)"] # optional additional headless permissions
 
 [value]
 command = "pytest tests/ -x -q"   # exit code + pass ratio → score in [0, 1]
+judge = true                      # also score each attempt with an LLM judge (default false)
+judge_model = "haiku"             # optional cheaper model for the judge only
+w_test = 0.5                      # reward = w_test * tests + w_judge * judge
+w_judge = 0.5
 
 [search]
 max_nodes = 20                    # episode budget
@@ -108,7 +112,21 @@ refine_width = 2                  # revision children per node
 max_depth = 3
 ```
 
-CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
+
+### LLM judge
+
+Tests alone stop being useful once they pass: on an already-green suite every attempt scores 1.0, the search ends after one episode, and an attempt that deleted the failing test looks perfect. With `--judge` (or `judge = true`), each attempt is also scored by an LLM, as in SWE-Search's value agent:
+
+- The judge reads the task, the attempt's cumulative diff and the test output, and returns a score from -100 to 100 plus a one-paragraph critique. It is told to score an attempt strongly negative if tests were deleted, skipped or weakened.
+- The node's reward is `w_test * tests + w_judge * judge` (the judge score is mapped to [0, 1]). An attempt that changed nothing is not judged and gets a judge score of 0, so it can no longer tie with real work.
+- The critique is fed into the revision prompts of that node's children, ahead of the test output.
+- The judge runs through the same agent CLI as the search (`judge_agent` and `judge_model` override that), in an empty scratch directory so it cannot edit the code it scores. Its spend counts toward `max_cost_usd` but not toward `max_nodes`.
+- If the judge times out or replies without a score, the attempt is scored on its tests alone (the judge half counts as 0) instead of being marked failed.
+
+`agent-mcts show <node>` prints both components and the critique.
+
+### Failures, cost and timeouts
 
 If an episode times out, the agent process fails, or you hit Ctrl-C mid-episode, agent-mcts snapshots any partial changes onto that node's branch before cleaning up its worktree. The node remains failed and is never selected automatically, but you can inspect it with `agent-mcts show <node>` and explicitly recover it with `agent-mcts apply <node>`. These snapshots run with `--no-verify` and signing disabled so a repo's commit hooks cannot reject them; in the rare case a snapshot still fails, the worktree is left on disk and its path is printed instead of being deleted.
 
@@ -128,7 +146,7 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
 - [x] **v0.2** — Codex CLI adapter, episode-count budget for agents that report no dollar cost, recoverable timed-out and interrupted episodes
-- [ ] **v0.3** — LLM-as-judge value fn, `resume`, parallel expansion, Kimi CLI adapter
+- [ ] **v0.3** — LLM-as-judge value fn (done), `resume`, parallel expansion, Kimi CLI adapter
 - [ ] **v0.4** — in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
 ## Contributing

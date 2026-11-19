@@ -253,3 +253,89 @@ def test_show_without_runs_fails(project_repo: Path) -> None:
     result = runner.invoke(cli.app, ["show"])
     assert result.exit_code == 1
     assert "no runs" in result.output
+
+
+class FakeJudgingAdapter(FakeAdapter):
+    """Plays both roles: writes a file as the agent, returns a verdict as the judge."""
+
+    judge_calls = 0
+    judge_models: ClassVar[list[str | None]] = []
+    judge_allowed_tools: ClassVar[list[list[str]]] = []
+
+    def __init__(
+        self,
+        binary: str | None = None,
+        *,
+        model: str | None = None,
+        permission_mode: str = "acceptEdits",
+        timeout_s: float = 600.0,
+        allowed_tools: list[str] | None = None,
+    ) -> None:
+        super().__init__(model=model, timeout_s=timeout_s, allowed_tools=allowed_tools)
+        self.allowed_tools = allowed_tools or []
+
+    async def run_episode(
+        self, prompt: str, workdir: Path, *, resume_session: str | None = None
+    ) -> EpisodeResult:
+        if not prompt.startswith("You are the evaluator"):
+            return await super().run_episode(prompt, workdir, resume_session=resume_session)
+        FakeJudgingAdapter.judge_calls += 1
+        FakeJudgingAdapter.judge_models.append(self.model)
+        FakeJudgingAdapter.judge_allowed_tools.append(self.allowed_tools)
+        return EpisodeResult(
+            session_id=f"j{FakeJudgingAdapter.judge_calls}",
+            summary="<Explanation>solid but untested</Explanation><Reward>60</Reward>",
+            cost_usd=0.05,
+        )
+
+
+@pytest.fixture
+def judged_repo(project_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeJudgingAdapter)
+    FakeJudgingAdapter.judge_calls = 0
+    FakeJudgingAdapter.judge_models = []
+    FakeJudgingAdapter.judge_allowed_tools = []
+    return project_repo
+
+
+def test_run_with_judge_scores_and_reports_components(judged_repo: Path) -> None:
+    (judged_repo / ".agent-mcts.toml").write_text('[value]\njudge_model = "haiku"\n')
+    output = do_run(["-n", "2", "--judge"])
+
+    assert "+ judge(haiku)" in output  # the plan line names the judge
+    # Tests pass and the judge says +60 → 0.5 + 0.5 * 0.8; no early stop at 1.0.
+    assert "Search finished: 2 episodes" in output
+    assert "reward=0.90" in output
+    assert "$1.10" in output  # 2 episodes at $0.50 plus 2 judge calls at $0.05
+    assert FakeJudgingAdapter.judge_calls == 2
+    assert FakeJudgingAdapter.judge_models == ["haiku", "haiku"]
+    assert FakeJudgingAdapter.judge_allowed_tools == [[], []]  # the judge runs nothing
+
+    shown = runner.invoke(cli.app, ["show", "n1"]).output
+    assert "tests=1.00 judge=0.80" in shown
+    assert "$0.50 + judge $0.05" in shown
+    assert "solid but untested" in shown
+
+
+def test_judge_is_off_by_default(judged_repo: Path) -> None:
+    do_run(["-n", "1"])
+    assert FakeJudgingAdapter.judge_calls == 0
+
+
+def test_config_enables_the_judge(judged_repo: Path) -> None:
+    (judged_repo / ".agent-mcts.toml").write_text("[value]\njudge = true\n")
+    do_run(["-n", "1"])
+    assert FakeJudgingAdapter.judge_calls == 1
+
+
+def test_no_judge_flag_overrides_config(judged_repo: Path) -> None:
+    (judged_repo / ".agent-mcts.toml").write_text("[value]\njudge = true\n")
+    do_run(["-n", "1", "--no-judge"])
+    assert FakeJudgingAdapter.judge_calls == 0
+
+
+def test_config_rejects_zero_weights(judged_repo: Path) -> None:
+    (judged_repo / ".agent-mcts.toml").write_text("[value]\nw_test = 0\nw_judge = 0\n")
+    result = runner.invoke(cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD])
+    assert result.exit_code == 1
+    assert "cannot both be zero" in result.output

@@ -45,6 +45,35 @@ A node's own evaluation is `reward` ∈ [0, 1]; `backup()` propagates a value fr
 up to the root. Selection policy (UCT constant, expansion width, etc.) lives in the
 search engine, not the data model.
 
+## Value: tests plus an optional LLM judge
+
+The default value function runs the project's test command: exit 0 scores 1.0, otherwise
+the pass ratio. That is a verifiable signal, but it cannot rank attempts once the suite
+is green, and it rewards deleting the failing test.
+
+`core/judge.py` adds the other half, following SWE-Search's Value Agent. The judge reads
+the task, the node's cumulative diff from the run's base commit, and the test output, and
+returns an integer in [-100, 100] with an explanation. The reward is
+
+    w_test * test_score + w_judge * (judge + 100) / 200
+
+Decisions worth knowing:
+
+- **Empty diff, no judge call.** The root and any child that changed nothing get a judge
+  score of 0 without spending anything. This is what breaks the tie between a no-op and
+  real work on a green suite.
+- **The judge is an `AgentBackend` episode** in an empty scratch directory. No second API
+  integration, and the judge cannot touch the worktree it scores.
+- **Judge spend is evaluation spend.** It is stored on the node separately from the
+  episode's cost (`eval_cost_usd`), counts toward `max_cost_usd`, and does not count as an
+  episode. A judge call whose cost figure is lost halts the search like a lost episode cost.
+- **A failed judge does not fail the node.** The judge half scores 0 and the detail says why.
+- **The explanation leads `eval_detail`,** so it survives prompt clipping and reaches the
+  children's revision prompts (the paper's hindsight feedback).
+
+Not done yet: a separate final-selection step (the paper's discriminator), judging
+siblings relative to each other, and the paper's depth terms in UCT.
+
 ## Persistence: append-only journal
 
 `.agent-mcts/runs/<run-id>/tree.jsonl` — first line is run metadata, then one full node

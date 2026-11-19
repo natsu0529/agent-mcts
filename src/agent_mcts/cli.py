@@ -15,8 +15,9 @@ from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, AgentBackend, ClaudeCodeAdapter, CodexCliAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
+from agent_mcts.core.judge import HybridValueFunction, LLMJudge
 from agent_mcts.core.model import Node, RunMeta, Tree
-from agent_mcts.core.value import CommandValueFunction
+from agent_mcts.core.value import CommandValueFunction, ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
 
 app = typer.Typer(
@@ -40,12 +41,19 @@ def _version_callback(value: bool) -> None:
 
 
 def _build_adapter(
-    agent_name: str, *, cfg: project.ProjectConfig, model: str | None, timeout_s: float
+    agent_name: str,
+    *,
+    cfg: project.ProjectConfig,
+    model: str | None,
+    timeout_s: float,
+    for_judge: bool = False,
 ) -> AgentBackend:
     if agent_name == "claude":
         value_command = cfg.value.command
         allowed_tools = list(dict.fromkeys([f"Bash({value_command})"] if value_command else []))
         allowed_tools.extend(tool for tool in cfg.claude.allowed_tools if tool not in allowed_tools)
+        if for_judge:
+            allowed_tools = []  # the judge reads a prompt; it has nothing to run
         return ClaudeCodeAdapter(
             model=model or cfg.model,
             timeout_s=timeout_s,
@@ -98,6 +106,13 @@ def run(
         float | None,
         typer.Option("--agent-timeout", help="Maximum seconds for each agent episode."),
     ] = None,
+    judge: Annotated[
+        bool | None,
+        typer.Option(
+            "--judge/--no-judge",
+            help="Score each attempt with an LLM judge as well as the value command.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Search for a solution to TASK with your coding agent."""
@@ -123,8 +138,23 @@ def run(
     if timeout_s <= 0:
         _fail("--agent-timeout must be greater than zero")
     agent_name = agent or cfg.agent
+    if judge is not None:
+        cfg.value.judge = judge
+    judge_adapter: AgentBackend | None = None
+    judge_label = ""
     try:
         adapter = _build_adapter(agent_name, cfg=cfg, model=model, timeout_s=timeout_s)
+        if cfg.value.judge:
+            judge_agent = cfg.value.judge_agent or agent_name
+            judge_model = cfg.value.judge_model or model or cfg.model
+            judge_adapter = _build_adapter(
+                judge_agent,
+                cfg=cfg,
+                model=judge_model,
+                timeout_s=cfg.value.judge_timeout_s,
+                for_judge=True,
+            )
+            judge_label = f" + judge({judge_model or judge_agent})"
     except AdapterError as exc:
         _fail(str(exc))
 
@@ -144,27 +174,37 @@ def run(
                 f"{cfg.search.max_nodes} episodes."
             )
     console.print(
-        f"Agent: [bold]{agent_name}[/] · Value: [bold]{value_command}[/] · "
+        f"Agent: [bold]{agent_name}[/] · Value: [bold]{value_command}{judge_label}[/] · "
         f"Budget: {budget} · Timeout: {timeout_s:.0f}s/episode"
     )
     if not yes:
         typer.confirm("Proceed?", abort=True)
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base_commit = project.head_commit(repo)
     tree = Tree(
         RunMeta(
             run_id=run_id,
             task=task,
             agent=agent_name,
             repo_root=str(repo),
-            base_commit=project.head_commit(repo),
+            base_commit=base_commit,
         )
     )
+    value_fn: ValueFunction = CommandValueFunction(value_command)
+    if judge_adapter is not None:
+        value_fn = HybridValueFunction(
+            value_fn,
+            LLMJudge(judge_adapter, task=task),
+            base_commit=base_commit,
+            w_test=cfg.value.w_test,
+            w_judge=cfg.value.w_judge,
+        )
     worktrees = WorktreeManager(repo, run_id)
     engine = SearchEngine(
         tree=tree,
         adapter=adapter,
-        value_fn=CommandValueFunction(value_command),
+        value_fn=value_fn,
         worktrees=worktrees,
         journal_path=project.journal_path(repo, run_id),
         config=cfg.search,
@@ -214,6 +254,15 @@ def _spend_summary(engine: SearchEngine) -> str:
 
 
 def _node_cost(node: Node) -> str:
+    episode = _episode_cost(node)
+    if not node.eval_cost_known:
+        return f"{episode} + judge unknown"
+    if node.eval_cost_usd:
+        return f"{episode} + judge ${node.eval_cost_usd:.2f}"
+    return episode
+
+
+def _episode_cost(node: Node) -> str:
     if not node.cost_known:
         return "unknown"
     if node.cost_usd is None:
@@ -255,6 +304,9 @@ def show(
     if found is None:
         _fail(f"no node {node} in run {tree.meta.run_id}")
     status = f"{found.status.value}  reward={found.reward}  Q={found.q:.2f}  N={found.visits}"
+    if found.test_score is not None:
+        judged = "-" if found.judge_score is None else f"{found.judge_score:.2f}"
+        status += f"  (tests={found.test_score:.2f} judge={judged})"
     for title, body in (
         ("status", status),
         ("branch", found.branch or "-"),

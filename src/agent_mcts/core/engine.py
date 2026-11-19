@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
 from agent_mcts.core.model import Node, NodeStatus, TokenUsage, Tree
-from agent_mcts.core.value import ValueFunction
+from agent_mcts.core.value import Evaluation, ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
 
 
@@ -56,13 +56,20 @@ class SearchEngine:
 
     @property
     def total_cost_usd(self) -> float:
-        """Dollars reported so far; unreported episodes (`cost_usd=None`) count $0."""
-        return sum(n.cost_usd or 0.0 for n in self.tree.nodes.values())
+        """Dollars reported so far, episodes plus evaluations (judge calls).
+
+        Unreported figures (`None`) count $0.
+        """
+        return sum((n.cost_usd or 0.0) + (n.eval_cost_usd or 0.0) for n in self.tree.nodes.values())
 
     @property
     def unknown_cost_episodes(self) -> int:
-        """Episodes whose spend was *lost* (timeout, crash, Ctrl-C after launch)."""
-        return sum(not n.cost_known for n in self.tree.nodes.values())
+        """Nodes whose spend was *lost* (timeout, crash, Ctrl-C after launch).
+
+        Covers the episode and the node's evaluation: a judge call that dies mid-flight
+        loses its figure exactly like an agent episode does.
+        """
+        return sum(not (n.cost_known and n.eval_cost_known) for n in self.tree.nodes.values())
 
     @property
     def unreported_cost_episodes(self) -> int:
@@ -75,6 +82,8 @@ class SearchEngine:
         for node in self.tree.nodes.values():
             if node.usage is not None:
                 total = total + node.usage
+            if node.eval_usage is not None:
+                total = total + node.eval_usage
         return total
 
     @property
@@ -116,9 +125,7 @@ class SearchEngine:
             root.eval_detail = f"baseline evaluation did not finish: {type(exc).__name__}"
             self._journal([root])
             raise
-        root.reward = evaluation.score
-        root.eval_detail = evaluation.detail
-        root.status = NodeStatus.EVALUATED
+        self._record_evaluation(root, evaluation)
         self.tree.backup(root.id, evaluation.score)
         self._journal([root])
 
@@ -199,9 +206,7 @@ class SearchEngine:
                 self.worktrees.commit_all(node.id)
                 node.branch = self.worktrees.branch_name(node.id)
                 evaluation = await self.value_fn.evaluate(workdir)
-                node.reward = evaluation.score
-                node.eval_detail = evaluation.detail
-                node.status = NodeStatus.EVALUATED
+                self._record_evaluation(node, evaluation)
         except AdapterError as exc:
             # A timed-out or crashed agent may still have produced valuable edits. Snapshot
             # them before CLI cleanup removes the disposable worktree, while keeping the
@@ -228,6 +233,17 @@ class SearchEngine:
         updated = self.tree.backup(node.id, node.reward or 0.0)
         self._journal(updated)
         return node
+
+    @staticmethod
+    def _record_evaluation(node: Node, evaluation: Evaluation) -> None:
+        node.reward = evaluation.score
+        node.eval_detail = evaluation.detail
+        node.test_score = evaluation.test_score
+        node.judge_score = evaluation.judge_score
+        node.eval_cost_usd = evaluation.cost_usd
+        node.eval_cost_known = evaluation.cost_known
+        node.eval_usage = evaluation.usage
+        node.status = NodeStatus.EVALUATED
 
     def _fail_with_snapshot(self, node: Node, detail: str) -> None:
         """Mark `node` failed and commit whatever its worktree holds onto the node branch.
@@ -256,6 +272,7 @@ class SearchEngine:
     def _within_budget(self) -> bool:
         # A backend that never reports dollars contributes $0 here and is bounded by
         # max_nodes alone; a *lost* figure (cost_known=False) still halts the search.
+        # Judge calls count toward the dollar ceiling but are not episodes.
         return (
             self.episodes < self.config.max_nodes
             and self.total_cost_usd < self.config.max_cost_usd
