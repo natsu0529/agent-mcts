@@ -6,8 +6,9 @@ import json
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import Self
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from agent_mcts.core.engine import SearchConfig
 
@@ -20,6 +21,19 @@ class ProjectError(RuntimeError):
 
 class ValueConfig(BaseModel):
     command: str | None = None
+    # LLM-as-judge (see `core.judge`): reward = w_test * tests + w_judge * judge.
+    judge: bool = False
+    judge_agent: str | None = None  # default: the run's agent
+    judge_model: str | None = None  # default: the run's model
+    judge_timeout_s: float = Field(default=300.0, gt=0)
+    w_test: float = Field(default=0.5, ge=0)
+    w_judge: float = Field(default=0.5, ge=0)
+
+    @model_validator(mode="after")
+    def _weights_not_both_zero(self) -> Self:
+        if self.w_test + self.w_judge <= 0:
+            raise ValueError("w_test and w_judge cannot both be zero")
+        return self
 
 
 class ClaudeConfig(BaseModel):

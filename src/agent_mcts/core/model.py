@@ -35,6 +35,8 @@ class Node(BaseModel):
 
     reward: float | None = None  # this node's own evaluation in [0, 1]
     eval_detail: str = ""  # value-function feedback (fed into children's revision prompts)
+    test_score: float | None = None  # reward components, when the value fn reports them
+    judge_score: float | None = None
     visits: int = 0  # MCTS N
     value_sum: float = 0.0  # MCTS W
 
@@ -42,6 +44,10 @@ class Node(BaseModel):
     cost_known: bool = True  # False: the figure was lost after the agent started
     usage: TokenUsage | None = None  # token counts, when the backend reports them
     duration_s: float = 0.0
+    # Spend of this node's *evaluation* (an LLM judge), kept apart from the episode's.
+    eval_cost_usd: float | None = 0.0
+    eval_cost_known: bool = True
+    eval_usage: TokenUsage | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
     @property

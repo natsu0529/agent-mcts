@@ -14,11 +14,21 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from agent_mcts import proctree
+from agent_mcts.adapters.base import TokenUsage
 
 
 class Evaluation(BaseModel):
     score: float  # in [0, 1]
     detail: str = ""  # feedback shown to humans and to revising agents
+
+    # Components, for value functions that combine signals (see `core.judge`).
+    test_score: float | None = None
+    judge_score: float | None = None  # None: no judge ran, or it produced no score
+
+    # What the evaluation itself cost, when it spends money (an LLM judge does).
+    cost_usd: float | None = 0.0  # None: the judge backend never reports dollars
+    cost_known: bool = True  # False: the judge died after starting, spend is lost
+    usage: TokenUsage | None = None
 
 
 class ValueFunction(Protocol):
