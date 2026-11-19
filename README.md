@@ -111,6 +111,12 @@ c_uct = 1.414                     # UCT exploration constant — yes, it's expos
 root_width = 3                    # diverse first attempts under the root
 refine_width = 2                  # revision children per node
 max_depth = 3
+backup = "mean"                   # "mean" (classic UCT), "max" (best in subtree) or "mix"
+selection = "descend"             # or "global": best expandable node anywhere in the tree
+depth_bonus = 0.0                 # with "global": + depth_bonus * exp(-depth_bonus_decay * (d - 1))
+depth_penalty = 0.0               # with "global": - depth_penalty * sqrt(d)
+give_up_after = 0                 # stop revising a line after this many low scores in a row
+low_reward = 0.25                 # what counts as a low score for give_up_after
 ```
 
 CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.

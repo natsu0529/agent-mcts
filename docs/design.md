@@ -45,6 +45,23 @@ A node's own evaluation is `reward` ∈ [0, 1]; `backup()` propagates a value fr
 up to the root. Selection policy (UCT constant, expansion width, etc.) lives in the
 search engine, not the data model.
 
+## Selection policy knobs
+
+The defaults are classic UCT: mean backup, descend from the root, expand the first node
+with spare width. Three settings change that, all off by default.
+
+- **`backup`.** `q = W/N` is a mean, which suits games where a position's value is an
+  expectation over play. Here every node is a complete, directly scored solution and the
+  goal is the single best one, so a parent with one excellent revision and one dud is a
+  good place to dig even though its mean is low. `max` uses the best value backed up
+  through the node (`value_max`); `mix` blends the two with `backup_mix`.
+- **`selection = "global"`** scores every expandable node in the tree and takes the best,
+  as SWE-Search does, instead of committing level by level. The paper's depth terms
+  (`depth_bonus`, `depth_penalty`) only matter here: when descending, the candidates at
+  each step are siblings, which share a depth, so the terms cancel.
+- **`give_up_after`** stops revising a line of attempts once its last N nodes all scored
+  below `low_reward`.
+
 ## Value: tests plus an optional LLM judge
 
 The default value function runs the project's test command: exit 0 scores 1.0, otherwise

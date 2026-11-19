@@ -12,8 +12,9 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
@@ -30,6 +31,27 @@ class SearchConfig(BaseModel):
     refine_width: int = 2  # revision children per non-root node
     max_depth: int = 3  # root is depth 0
     success_threshold: float = 0.999  # stop as soon as a node scores this high
+
+    # What a node is worth during selection. "mean" is classic UCT (Q = W/N). Every node
+    # here is a complete, directly scored solution and the goal is the single best one,
+    # so "max" (best reward seen in the subtree) or "mix" can fit better than a mean
+    # that one poor sibling drags down.
+    backup: Literal["mean", "max", "mix"] = "mean"
+    backup_mix: float = Field(default=0.5, ge=0, le=1)  # weight of max in "mix"
+
+    # "descend" walks down from the root comparing siblings (classic UCT, expand-first).
+    # "global" scores every expandable node in the tree and takes the best, as
+    # SWE-Search does; only there do the depth terms below change anything, since
+    # siblings share a depth.
+    selection: Literal["descend", "global"] = "descend"
+    depth_bonus: float = Field(default=0.0, ge=0)  # alpha: + alpha * exp(-beta * (d - 1))
+    depth_bonus_decay: float = Field(default=1.0, ge=0)  # beta
+    depth_penalty: float = Field(default=0.0, ge=0)  # gamma: - gamma * sqrt(d)
+
+    # Stop revising a line of attempts once its last `give_up_after` nodes all scored
+    # below `low_reward`. 0 disables the rule.
+    give_up_after: int = Field(default=0, ge=0)
+    low_reward: float = Field(default=0.25, ge=0, le=1)
 
 
 class SearchEngine:
@@ -176,7 +198,36 @@ class SearchEngine:
             node.status is NodeStatus.EVALUATED
             and self._depth(node) < self.config.max_depth
             and len(self.tree.children(node.id)) < self._width(node)
+            and not self._given_up(node)
         )
+
+    def _given_up(self, node: Node) -> bool:
+        """Whether this line of attempts has scored low too many times in a row."""
+        streak = self.config.give_up_after
+        if streak <= 0:
+            return False
+        line = self.tree.path(node.id)[1:]  # the root is the baseline, not an attempt
+        if len(line) < streak:
+            return False
+        return all((n.reward or 0.0) < self.config.low_reward for n in line[-streak:])
+
+    def _value(self, node: Node) -> float:
+        """A node's worth for selection, per the configured backup rule."""
+        best = node.value_max if node.value_max is not None else node.q
+        if self.config.backup == "max":
+            return best
+        if self.config.backup == "mix":
+            mix = self.config.backup_mix
+            return mix * best + (1 - mix) * node.q
+        return node.q
+
+    def _depth_term(self, node: Node) -> float:
+        cfg = self.config
+        if cfg.depth_bonus == 0 and cfg.depth_penalty == 0:
+            return 0.0
+        depth = self._depth(node)
+        bonus = cfg.depth_bonus * math.exp(-cfg.depth_bonus_decay * (depth - 1))
+        return bonus - cfg.depth_penalty * math.sqrt(depth)
 
     def _subtree_has_capacity(self, node: Node) -> bool:
         if self._can_expand(node):
@@ -184,14 +235,35 @@ class SearchEngine:
         return any(self._subtree_has_capacity(c) for c in self.tree.children(node.id))
 
     def _uct(self, parent: Node, child: Node) -> float:
-        explore = math.sqrt(math.log(max(parent.visits, 1)) / child.visits)
-        return child.q + self.config.c_uct * explore
+        explore = math.sqrt(math.log(max(parent.visits, 1)) / max(child.visits, 1))
+        return self._value(child) + self.config.c_uct * explore + self._depth_term(child)
+
+    def next_to_expand(self) -> Node | None:
+        """The node the policy would expand now; None when nothing can be expanded."""
+        return self._select()
 
     def _select(self) -> Node | None:
-        """Descend from the root; expand at the first node with spare width."""
         root = self.tree.root
         if root is None:
             return None
+        if self.config.selection == "global":
+            return self._select_global()
+        return self._select_descending(root)
+
+    def _select_global(self) -> Node | None:
+        """Best expandable node anywhere in the tree, each scored against its parent."""
+        candidates = [n for n in self.tree.nodes.values() if self._can_expand(n)]
+        if not candidates:
+            return None
+
+        def score(node: Node) -> float:
+            parent = self.tree.nodes[node.parent_id] if node.parent_id is not None else node
+            return self._uct(parent, node)
+
+        return max(candidates, key=score)
+
+    def _select_descending(self, root: Node) -> Node | None:
+        """Descend from the root; expand at the first node with spare width."""
         node: Node = root
         while True:
             if self._can_expand(node):
