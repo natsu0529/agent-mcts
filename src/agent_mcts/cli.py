@@ -12,12 +12,13 @@ from typing import Annotated, NoReturn
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 
 from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, AgentBackend, ClaudeCodeAdapter, CodexCliAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
-from agent_mcts.core.judge import HybridValueFunction, LLMJudge
+from agent_mcts.core.judge import FinalSelector, HybridValueFunction, LLMJudge
 from agent_mcts.core.model import Node, NodeStatus, RunMeta, Tree
 from agent_mcts.core.value import CommandValueFunction, ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
@@ -242,14 +243,25 @@ def _build_engine(
     meta = tree.meta
     assert cfg.value.command is not None
     value_fn: ValueFunction = CommandValueFunction(cfg.value.command)
+    selector: FinalSelector | None = None
     if backends.judge is not None:
+        judge = LLMJudge(backends.judge, task=meta.task)
+        base_commit = meta.base_commit or project.head_commit(repo)
         value_fn = HybridValueFunction(
             value_fn,
-            LLMJudge(backends.judge, task=meta.task),
-            base_commit=meta.base_commit or project.head_commit(repo),
+            judge,
+            base_commit=base_commit,
             w_test=cfg.value.w_test,
             w_judge=cfg.value.w_judge,
         )
+        if cfg.value.select:
+            selector = FinalSelector(
+                judge,
+                repo=repo,
+                base_commit=base_commit,
+                top_k=cfg.value.select_top_k,
+                margin=cfg.value.select_margin,
+            )
     return SearchEngine(
         tree=tree,
         adapter=backends.agent,
@@ -258,6 +270,7 @@ def _build_engine(
         journal_path=project.journal_path(repo, meta.run_id),
         config=cfg.search,
         accepted_unknown_cost=accepted_unknown_cost,
+        selector=selector,
     )
 
 
@@ -297,6 +310,7 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
             "attempt that keeps it passing, whatever that attempt did. Re-run with "
             "[bold]--judge[/], or use a value command that fails until the task is done."
         )
+    _print_selection(tree)
     best = tree.best()
     if best is None or best.parent_id is None:
         console.print("No attempt beat the baseline. Inspect with: [bold]agent-mcts show[/]")
@@ -305,6 +319,23 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
         summary = best.summary.splitlines()[0][:80] if best.summary else ""
         console.print(f"Best: [bold]{best.id}[/] reward={reward:.2f} {summary}")
         console.print("Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]")
+
+
+def _print_selection(tree: Tree) -> None:
+    selection = tree.selection
+    if selection is None:
+        return
+    if selection.node_id is None:
+        console.print(
+            f"[yellow]warning:[/] the final comparison of {', '.join(selection.candidates)} "
+            f"did not produce a choice ({selection.error}); falling back to the highest reward."
+        )
+        return
+    others = ", ".join(c for c in selection.candidates if c != selection.node_id)
+    console.print(
+        f"Final comparison: [bold]{selection.node_id}[/] chosen over {others}. "
+        f"{escape(selection.explanation)}"
+    )
 
 
 @app.command()
@@ -469,6 +500,7 @@ def show(
     if node is None:
         console.print(f"task: {tree.meta.task}  ·  run {tree.meta.run_id}")
         console.print(tui.render_tree(tree))
+        _print_selection(tree)
         return
     found = tree.nodes.get(node)
     if found is None:

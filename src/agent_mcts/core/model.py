@@ -72,12 +72,31 @@ class RunMeta(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class Selection(BaseModel):
+    """A final head-to-head choice among the top-scoring nodes (see `core.judge`).
+
+    The per-node reward guides the search; this decides what `apply` offers. A selection
+    that could not be made (`node_id=None`) is still recorded, because it may have cost
+    money.
+    """
+
+    node_id: str | None = None
+    candidates: list[str] = Field(default_factory=list)  # node ids that were compared
+    explanation: str = ""
+    error: str = ""
+    cost_usd: float | None = 0.0
+    cost_known: bool = True
+    usage: TokenUsage | None = None
+
+
 class Tree:
     """In-memory search tree. Persistence lives in `journal`; policy lives in the engine."""
 
     def __init__(self, meta: RunMeta) -> None:
         self.meta = meta
         self.nodes: dict[str, Node] = {}
+        self.selections: list[Selection] = []  # every selection made, for cost totals
+        self.selection: Selection | None = None  # the one still current, if any
 
     @property
     def root(self) -> Node | None:
@@ -91,7 +110,12 @@ class Tree:
         if node.parent_id is None and self.root is not None:
             raise ValueError("tree already has a root")
         self.nodes[node.id] = node
+        self.selection = None  # a selection made before this node existed is stale
         return node
+
+    def record_selection(self, selection: Selection) -> None:
+        self.selections.append(selection)
+        self.selection = selection
 
     def next_id(self) -> str:
         return f"n{len(self.nodes)}"
@@ -111,7 +135,26 @@ class Tree:
         return out
 
     def best(self) -> Node | None:
-        """Highest-reward evaluated node — the branch `apply` offers by default.
+        """The branch `apply` offers by default.
+
+        A current final selection wins; otherwise the highest-reward evaluated node.
+        """
+        chosen = self.selection.node_id if self.selection is not None else None
+        if chosen is not None and chosen in self.nodes:
+            return self.nodes[chosen]
+        return self.best_by_reward()
+
+    def ranked(self) -> list[Node]:
+        """Evaluated nodes, best reward first (ties: deeper first)."""
+        scored = [
+            n
+            for n in self.nodes.values()
+            if n.status is NodeStatus.EVALUATED and n.reward is not None
+        ]
+        return sorted(scored, key=lambda n: (n.reward or 0.0, len(self.path(n.id))), reverse=True)
+
+    def best_by_reward(self) -> Node | None:
+        """Highest-reward evaluated node.
 
         Ties prefer deeper nodes: an attempt that did work beats the untouched
         baseline scoring the same (e.g. both 1.0 on an already-green suite).

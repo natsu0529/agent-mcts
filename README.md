@@ -132,6 +132,8 @@ Tests alone stop being useful once they pass: on an already-green suite every at
 - The judge runs through the same agent CLI as the search (`judge_agent` and `judge_model` override that), in an empty scratch directory so it cannot edit the code it scores. Its spend counts toward `max_cost_usd` but not toward `max_nodes`.
 - If the judge times out or replies without a score, the attempt is scored on its tests alone (the judge half counts as 0) instead of being marked failed.
 
+- **Final comparison.** Per-node scores are noisy, and two good attempts often land within a point of each other. When the search ends, the attempts within `select_margin` (0.1) of the best, up to `select_top_k` (3), are compared head to head in one more judge call, and its pick is what `apply` offers. With a clear winner there is nothing to compare and no call is made. Turn it off with `select = false`.
+
 `agent-mcts show <node>` prints both components and the critique.
 
 ### Running in parallel

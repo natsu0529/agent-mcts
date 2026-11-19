@@ -259,6 +259,7 @@ class FakeJudgingAdapter(FakeAdapter):
     """Plays both roles: writes a file as the agent, returns a verdict as the judge."""
 
     judge_calls = 0
+    rank_calls = 0
     judge_models: ClassVar[list[str | None]] = []
     judge_allowed_tools: ClassVar[list[list[str]]] = []
 
@@ -277,6 +278,13 @@ class FakeJudgingAdapter(FakeAdapter):
     async def run_episode(
         self, prompt: str, workdir: Path, *, resume_session: str | None = None
     ) -> EpisodeResult:
+        if prompt.startswith("You are the final judge"):
+            FakeJudgingAdapter.rank_calls += 1
+            return EpisodeResult(
+                session_id="rank",
+                summary="<Explanation>n2 is tidier</Explanation><Ranking>n2, n1</Ranking>",
+                cost_usd=0.05,
+            )
         if not prompt.startswith("You are the evaluator"):
             return await super().run_episode(prompt, workdir, resume_session=resume_session)
         FakeJudgingAdapter.judge_calls += 1
@@ -293,6 +301,7 @@ class FakeJudgingAdapter(FakeAdapter):
 def judged_repo(project_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeJudgingAdapter)
     FakeJudgingAdapter.judge_calls = 0
+    FakeJudgingAdapter.rank_calls = 0
     FakeJudgingAdapter.judge_models = []
     FakeJudgingAdapter.judge_allowed_tools = []
     return project_repo
@@ -306,7 +315,13 @@ def test_run_with_judge_scores_and_reports_components(judged_repo: Path) -> None
     # Tests pass and the judge says +60 → 0.5 + 0.5 * 0.8; no early stop at 1.0.
     assert "Search finished: 2 episodes" in output
     assert "reward=0.90" in output
-    assert "$1.10" in output  # 2 episodes at $0.50 plus 2 judge calls at $0.05
+    # 2 episodes at $0.50, 2 judge calls and 1 final comparison at $0.05 each.
+    assert "$1.15" in output
+    # The two attempts tie on reward; the head-to-head comparison decides.
+    flat = " ".join(output.split())
+    assert "Final comparison: n2 chosen over n1. n2 is tidier" in flat
+    assert "Best: n2" in flat
+    assert FakeJudgingAdapter.rank_calls == 1
     assert FakeJudgingAdapter.judge_calls == 2
     assert FakeJudgingAdapter.judge_models == ["haiku", "haiku"]
     assert FakeJudgingAdapter.judge_allowed_tools == [[], []]  # the judge runs nothing
@@ -371,3 +386,20 @@ def test_missing_value_command_names_the_config_key(project_repo: Path) -> None:
     result = runner.invoke(cli.app, ["run", "fix the widget", "-y"])
     assert result.exit_code == 1
     assert "[value].command" in " ".join(result.output.split())
+
+
+def test_apply_and_show_follow_the_final_comparison(judged_repo: Path) -> None:
+    do_run(["-n", "2", "--judge"])
+
+    tree_view = " ".join(runner.invoke(cli.app, ["show"]).output.split())
+    assert "Final comparison: n2 chosen over n1" in tree_view
+    applied = runner.invoke(cli.app, ["apply"])
+    assert applied.exit_code == 0, applied.output
+    assert "Staged n2" in applied.output
+
+
+def test_final_comparison_can_be_turned_off(judged_repo: Path) -> None:
+    (judged_repo / ".agent-mcts.toml").write_text("[value]\nselect = false\n")
+    output = " ".join(do_run(["-n", "2", "--judge"]).split())
+    assert FakeJudgingAdapter.rank_calls == 0
+    assert "Final comparison" not in output

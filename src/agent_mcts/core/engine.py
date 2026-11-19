@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
+from agent_mcts.core.judge import FinalSelector
 from agent_mcts.core.model import Node, NodeStatus, TokenUsage, Tree
 from agent_mcts.core.value import Evaluation, ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
@@ -80,6 +81,7 @@ class SearchEngine:
         config: SearchConfig | None = None,
         on_change: Callable[[], None] | None = None,
         accepted_unknown_cost: frozenset[str] = frozenset(),
+        selector: FinalSelector | None = None,
     ) -> None:
         self.tree = tree
         self.adapter = adapter
@@ -91,6 +93,7 @@ class SearchEngine:
         # Node ids whose lost cost figure the user has agreed to continue past (resume).
         # They still show as unknown in every total; they just no longer stop the loop.
         self.accepted_unknown_cost = accepted_unknown_cost
+        self.selector = selector  # optional final head-to-head choice after the search
 
     @property
     def total_cost_usd(self) -> float:
@@ -98,7 +101,10 @@ class SearchEngine:
 
         Unreported figures (`None`) count $0.
         """
-        return sum((n.cost_usd or 0.0) + (n.eval_cost_usd or 0.0) for n in self.tree.nodes.values())
+        nodes = sum(
+            (n.cost_usd or 0.0) + (n.eval_cost_usd or 0.0) for n in self.tree.nodes.values()
+        )
+        return nodes + sum(s.cost_usd or 0.0 for s in self.tree.selections)
 
     @property
     def unknown_cost_episodes(self) -> int:
@@ -107,7 +113,8 @@ class SearchEngine:
         Covers the episode and the node's evaluation: a judge call that dies mid-flight
         loses its figure exactly like an agent episode does.
         """
-        return sum(not (n.cost_known and n.eval_cost_known) for n in self.tree.nodes.values())
+        nodes = sum(not (n.cost_known and n.eval_cost_known) for n in self.tree.nodes.values())
+        return nodes + sum(not s.cost_known for s in self.tree.selections)
 
     @property
     def unreported_cost_episodes(self) -> int:
@@ -122,6 +129,9 @@ class SearchEngine:
                 total = total + node.usage
             if node.eval_usage is not None:
                 total = total + node.eval_usage
+        for selection in self.tree.selections:
+            if selection.usage is not None:
+                total = total + selection.usage
         return total
 
     @property
@@ -188,7 +198,26 @@ class SearchEngine:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+        await self._select_final()
         return self.tree
+
+    async def _select_final(self) -> None:
+        """Let the selector choose among the top nodes, unless one already did.
+
+        Skipped when the dollar ceiling is already reached: the search stopped for lack
+        of money, and the selection is one more paid call.
+        """
+        if self.selector is None or self.tree.selection is not None:
+            return
+        if self.adapter.reports_cost and self.total_cost_usd >= self.config.max_cost_usd:
+            return
+        selection = await self.selector.select(self.tree)
+        if selection is None:
+            return
+        self.tree.record_selection(selection)
+        journal.append_selection(self.journal_path, selection)
+        if self.on_change is not None:
+            self.on_change()
 
     def _may_launch(self, in_flight: int) -> bool:
         if not self._within_budget() or self.solved:
