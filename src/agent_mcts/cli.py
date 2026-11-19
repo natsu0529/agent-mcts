@@ -331,7 +331,7 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
         console.print("Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]")
 
 
-def _print_selection(tree: Tree) -> None:
+def _print_selection(tree: Tree, *, full: bool = False) -> None:
     selection = tree.selection
     if selection is None:
         return
@@ -342,9 +342,12 @@ def _print_selection(tree: Tree) -> None:
         )
         return
     others = ", ".join(c for c in selection.candidates if c != selection.node_id)
+    reason = " ".join(selection.explanation.split())
+    if not full and len(reason) > 300:
+        # The run summary stays scannable; `agent-mcts show` prints the whole reasoning.
+        reason = reason[:300].rsplit(" ", 1)[0] + " … (full text: agent-mcts show)"
     console.print(
-        f"Final comparison: [bold]{selection.node_id}[/] chosen over {others}. "
-        f"{escape(selection.explanation)}"
+        f"Final comparison: [bold]{selection.node_id}[/] chosen over {others}. {escape(reason)}"
     )
 
 
@@ -510,7 +513,7 @@ def show(
     if node is None:
         console.print(f"task: {tree.meta.task}  ·  run {tree.meta.run_id}")
         console.print(tui.render_tree(tree))
-        _print_selection(tree)
+        _print_selection(tree, full=True)
         return
     found = tree.nodes.get(node)
     if found is None:
