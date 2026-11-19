@@ -124,7 +124,18 @@ memory and on journal replay, and the next run end makes a new one. Its cost sta
 the books either way. SWE-Search uses a multi-agent debate here; one call is the cheap
 version of the same separation.
 
-Not done yet: judging siblings relative to each other during the search.
+### Sibling ranking steers selection only
+
+With `relative = true`, each time an attempt is evaluated its sibling group is ranked in
+one judge call, by what each sibling changed relative to the shared parent. The place in
+that ranking is stored as `sibling_score` (1.0 best, 0.0 worst) and blended into the
+selection value by `sibling_weight`.
+
+It is deliberately kept out of backup and out of `Tree.best()`: a rank only means
+something inside its group, and both of those compare across groups. This is the
+group-relative idea from GRPO applied to selection; nothing is trained. A per-parent
+lock and a record of the last ranked group keep siblings that finish together from each
+paying for the same ranking.
 
 ## Persistence: append-only journal
 

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
-from agent_mcts.core.judge import FinalSelector
+from agent_mcts.core.judge import FinalSelector, SiblingRanker
 from agent_mcts.core.model import Node, NodeStatus, TokenUsage, Tree
 from agent_mcts.core.value import Evaluation, ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
@@ -61,6 +61,10 @@ class SearchConfig(BaseModel):
     # other's summaries.
     parallelism: int = Field(default=1, ge=1)
 
+    # How much a node's standing among its siblings (`Node.sibling_score`) counts in
+    # selection, against its backed-up value. Only matters when siblings are ranked.
+    sibling_weight: float = Field(default=0.5, ge=0, le=1)
+
 
 class SearchEngine:
     """Runs one search, expanding up to `config.parallelism` nodes at a time.
@@ -82,6 +86,7 @@ class SearchEngine:
         on_change: Callable[[], None] | None = None,
         accepted_unknown_cost: frozenset[str] = frozenset(),
         selector: FinalSelector | None = None,
+        sibling_ranker: SiblingRanker | None = None,
     ) -> None:
         self.tree = tree
         self.adapter = adapter
@@ -94,6 +99,9 @@ class SearchEngine:
         # They still show as unknown in every total; they just no longer stop the loop.
         self.accepted_unknown_cost = accepted_unknown_cost
         self.selector = selector  # optional final head-to-head choice after the search
+        self.sibling_ranker = sibling_ranker  # optional ranking within sibling groups
+        self._rank_locks: dict[str, asyncio.Lock] = {}
+        self._ranked_groups: dict[str, frozenset[str]] = {}
 
     @property
     def total_cost_usd(self) -> float:
@@ -307,11 +315,16 @@ class SearchEngine:
         mean = node.value_sum / visits if visits else 0.0
         best = node.value_max if node.value_max is not None else mean
         if self.config.backup == "max":
-            return best
-        if self.config.backup == "mix":
+            value = best
+        elif self.config.backup == "mix":
             mix = self.config.backup_mix
-            return mix * best + (1 - mix) * mean
-        return mean
+            value = mix * best + (1 - mix) * mean
+        else:
+            value = mean
+        if node.sibling_score is None:
+            return value
+        weight = self.config.sibling_weight
+        return (1 - weight) * value + weight * node.sibling_score
 
     def _depth_term(self, node: Node) -> float:
         cfg = self.config
@@ -456,7 +469,43 @@ class SearchEngine:
 
         updated = self.tree.backup(node.id, node.reward or 0.0)
         self._journal(updated)
+        # After the node is fully recorded: an interruption during the ranking must not
+        # turn a finished, evaluated attempt into a failed one.
+        await self._rank_siblings(parent, node)
         return node
+
+    async def _rank_siblings(self, parent: Node, arrived: Node) -> None:
+        """Re-rank `parent`'s evaluated children now that `arrived` has joined them."""
+        if self.sibling_ranker is None or arrived.status is not NodeStatus.EVALUATED:
+            return
+        lock = self._rank_locks.setdefault(parent.id, asyncio.Lock())
+        async with lock:
+            group = [
+                c
+                for c in self.tree.children(parent.id)
+                if c.status is NodeStatus.EVALUATED and c.branch
+            ]
+            ids = frozenset(c.id for c in group)
+            # Siblings that finish together would otherwise each pay for the same ranking.
+            if len(group) < 2 or self._ranked_groups.get(parent.id) == ids:
+                return
+            ranking = await self.sibling_ranker.rank(parent, group)
+            arrived.eval_cost_usd = (
+                None
+                if arrived.eval_cost_usd is None or ranking.cost_usd is None
+                else arrived.eval_cost_usd + ranking.cost_usd
+            )
+            arrived.eval_cost_known = arrived.eval_cost_known and ranking.cost_known
+            if ranking.usage is not None:
+                arrived.eval_usage = (arrived.eval_usage or TokenUsage()) + ranking.usage
+            changed = [arrived]
+            if ranking.order is not None:
+                self._ranked_groups[parent.id] = ids
+                last = len(ranking.order) - 1
+                for place, node_id in enumerate(ranking.order):
+                    self.tree.nodes[node_id].sibling_score = 1 - place / last
+                changed = group
+            self._journal(changed)
 
     @staticmethod
     def _record_evaluation(node: Node, evaluation: Evaluation) -> None:
