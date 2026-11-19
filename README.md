@@ -52,6 +52,7 @@ When it finishes (or when you Ctrl-C — MCTS is anytime, the partial tree is sa
 
 ```bash
 agent-mcts show        # inspect the tree; `show n3` prints a node's prompt, summary, evaluation
+agent-mcts resume      # continue the latest run where it stopped (`resume -n 20` raises the budget)
 agent-mcts apply       # stage the best node's changes (squash merge — you review and commit)
 agent-mcts apply n2    # ...or pick a different branch
 ```
@@ -126,6 +127,15 @@ Tests alone stop being useful once they pass: on an already-green suite every at
 
 `agent-mcts show <node>` prints both components and the critique.
 
+### Resuming a run
+
+`agent-mcts resume [run-id]` continues a run that was interrupted or ran out of budget. It reuses the run's journal and branches, so the tree keeps growing in place.
+
+- The run continues under the settings it was started with (value command, judge, model, search parameters), not under whatever `.agent-mcts.toml` says today. New nodes have to be scored the way the old ones were.
+- `-n` and `--max-cost` set new *totals* for the run. A run that used 12 of 12 episodes needs `resume -n 20` to run 8 more.
+- If earlier episodes were cut off before reporting their cost, `resume` says so and asks before continuing. The real spend so far is then higher than the figure shown.
+- An episode that was running when the process was killed outright is marked failed, and whatever its worktree held is snapshotted to its branch.
+
 ### Failures, cost and timeouts
 
 If an episode times out, the agent process fails, or you hit Ctrl-C mid-episode, agent-mcts snapshots any partial changes onto that node's branch before cleaning up its worktree. The node remains failed and is never selected automatically, but you can inspect it with `agent-mcts show <node>` and explicitly recover it with `agent-mcts apply <node>`. These snapshots run with `--no-verify` and signing disabled so a repo's commit hooks cannot reject them; in the rare case a snapshot still fails, the worktree is left on disk and its path is printed instead of being deleted.
@@ -146,7 +156,7 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
 - [x] **v0.2** — Codex CLI adapter, episode-count budget for agents that report no dollar cost, recoverable timed-out and interrupted episodes
-- [ ] **v0.3** — LLM-as-judge value fn (done), `resume`, parallel expansion, Kimi CLI adapter
+- [ ] **v0.3** — LLM-as-judge value fn (done), `resume` (done), parallel expansion, Kimi CLI adapter
 - [ ] **v0.4** — in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
 ## Contributing

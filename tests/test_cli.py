@@ -365,3 +365,9 @@ def test_show_rounds_the_reward(judged_repo: Path) -> None:
     do_run(["-n", "1", "--judge"])
     shown = runner.invoke(cli.app, ["show", "n1"]).output
     assert "reward=0.90 " in shown
+
+
+def test_missing_value_command_names_the_config_key(project_repo: Path) -> None:
+    result = runner.invoke(cli.app, ["run", "fix the widget", "-y"])
+    assert result.exit_code == 1
+    assert "[value].command" in " ".join(result.output.split())

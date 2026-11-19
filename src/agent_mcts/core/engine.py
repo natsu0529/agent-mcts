@@ -45,6 +45,7 @@ class SearchEngine:
         journal_path: Path,
         config: SearchConfig | None = None,
         on_change: Callable[[], None] | None = None,
+        accepted_unknown_cost: frozenset[str] = frozenset(),
     ) -> None:
         self.tree = tree
         self.adapter = adapter
@@ -53,6 +54,9 @@ class SearchEngine:
         self.journal_path = journal_path
         self.config = config or SearchConfig()
         self.on_change = on_change  # reassignable: the live TUI attaches itself here
+        # Node ids whose lost cost figure the user has agreed to continue past (resume).
+        # They still show as unknown in every total; they just no longer stop the loop.
+        self.accepted_unknown_cost = accepted_unknown_cost
 
     @property
     def total_cost_usd(self) -> float:
@@ -90,19 +94,49 @@ class SearchEngine:
     def episodes(self) -> int:
         return max(0, len(self.tree.nodes) - 1)
 
+    @property
+    def solved(self) -> bool:
+        """Whether some evaluated node already meets the success threshold."""
+        return any(
+            n.parent_id is not None
+            and n.status is NodeStatus.EVALUATED
+            and (n.reward or 0.0) >= self.config.success_threshold
+            for n in self.tree.nodes.values()
+        )
+
+    def recover_interrupted(self) -> list[Node]:
+        """Close out nodes a killed process left RUNNING; returns the nodes it changed.
+
+        Ctrl-C is handled in `_expand`, but a hard kill (SIGKILL, power loss) leaves the
+        journal saying an episode is still in flight. Its worktree may still be on disk:
+        snapshot what is there, mark the node failed, and treat its cost as lost.
+        """
+        recovered: list[Node] = []
+        for node in self.tree.nodes.values():
+            if node.status not in (NodeStatus.RUNNING, NodeStatus.PENDING):
+                continue
+            detail = "interrupted: the process running this search was killed"
+            if self.worktrees.worktree_path(node.id).is_dir():
+                self._fail_with_snapshot(node, detail)
+            else:
+                node.status = NodeStatus.FAILED
+                node.reward = 0.0
+                node.eval_detail = detail
+            node.cost_known = node.parent_id is None  # the root baseline runs no agent
+            recovered.append(node)
+            if node.parent_id is not None:
+                recovered.extend(self.tree.backup(node.id, 0.0))
+        self._journal(recovered)
+        return recovered
+
     async def run(self) -> Tree:
         if self.tree.root is None:
             await self._init_root()
-        while self._within_budget():
+        while self._within_budget() and not self.solved:
             parent = self._select()
             if parent is None:
                 break  # every node is at width/depth capacity
-            node = await self._expand(parent)
-            if (
-                node.status is NodeStatus.EVALUATED
-                and (node.reward or 0.0) >= self.config.success_threshold
-            ):
-                break
+            await self._expand(parent)
         return self.tree
 
     # -- setup ---------------------------------------------------------------
@@ -276,7 +310,13 @@ class SearchEngine:
         return (
             self.episodes < self.config.max_nodes
             and self.total_cost_usd < self.config.max_cost_usd
-            and self.unknown_cost_episodes == 0
+            and not self._blocking_unknown_cost()
+        )
+
+    def _blocking_unknown_cost(self) -> bool:
+        return any(
+            not (n.cost_known and n.eval_cost_known) and n.id not in self.accepted_unknown_cost
+            for n in self.tree.nodes.values()
         )
 
     def _journal(self, nodes: list[Node]) -> None:
