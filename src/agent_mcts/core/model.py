@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +65,9 @@ class RunMeta(BaseModel):
     agent: str = "claude"
     repo_root: str
     base_commit: str | None = None  # commit the root worktree was created from
+    # The settings the run was started with (model, timeouts, value and search
+    # config), so `resume` continues under them. Empty for journals that predate it.
+    config: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)
 
 
