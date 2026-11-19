@@ -24,7 +24,26 @@ def _diversity_block(sibling_summaries: list[str], intro: str) -> str:
     return f"\n{intro}\n{lines}\nTake a meaningfully different approach from all of the above.\n"
 
 
-def root_attempt_prompt(task: str, baseline_detail: str, sibling_summaries: list[str]) -> str:
+def _parallel_block(slot: int) -> str:
+    """Decorrelate attempts that run at the same time and cannot see each other.
+
+    Each is told its position and asked to rank the plausible approaches and take the
+    one at that position. Attempts that rank similarly then land on different
+    approaches without any communication.
+    """
+    if slot <= 0:
+        return ""
+    return (
+        f"\nOther attempts are running in parallel right now and cannot see each other. "
+        f"You are attempt #{slot}. Before you start, list the meaningfully different "
+        "approaches you could take, from most to least obvious, and take the one at "
+        f"position {slot} (wrap around if the list is shorter).\n"
+    )
+
+
+def root_attempt_prompt(
+    task: str, baseline_detail: str, sibling_summaries: list[str], *, parallel_slot: int = 0
+) -> str:
     baseline = ""
     if baseline_detail.strip():
         baseline = (
@@ -37,7 +56,7 @@ def root_attempt_prompt(task: str, baseline_detail: str, sibling_summaries: list
     return (
         "You are one attempt in a tree search over solutions to a coding task.\n"
         f"\nTASK:\n{task}\n"
-        f"{baseline}{diversity}\n"
+        f"{baseline}{diversity}{_parallel_block(parallel_slot)}\n"
         "Work in the current directory and implement a complete solution attempt. "
         "Do not commit; leave your changes in the working tree. "
         "You may be unable to execute commands in this session; that is fine — the "
@@ -47,7 +66,12 @@ def root_attempt_prompt(task: str, baseline_detail: str, sibling_summaries: list
 
 
 def revision_prompt(
-    task: str, parent_reward: float, eval_detail: str, sibling_summaries: list[str]
+    task: str,
+    parent_reward: float,
+    eval_detail: str,
+    sibling_summaries: list[str],
+    *,
+    parallel_slot: int = 0,
 ) -> str:
     feedback = ""
     if eval_detail.strip():
@@ -59,7 +83,7 @@ def revision_prompt(
         f"Your previous attempt at the task below scored {parent_reward:.2f} "
         "on the evaluation (0 = worst, 1 = best).\n"
         f"\nTASK:\n{task}\n"
-        f"{feedback}{diversity}\n"
+        f"{feedback}{diversity}{_parallel_block(parallel_slot)}\n"
         "Revise your work in the current directory to address the problems shown in the "
         "feedback. Do not commit; leave your changes in the working tree. "
         "You may be unable to execute commands in this session; that is fine — the "

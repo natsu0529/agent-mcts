@@ -9,6 +9,7 @@ Policy summary (see docs/design.md):
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import Callable
 from pathlib import Path
@@ -53,9 +54,20 @@ class SearchConfig(BaseModel):
     give_up_after: int = Field(default=0, ge=0)
     low_reward: float = Field(default=0.25, ge=0, le=1)
 
+    # Episodes in flight at once. 1 is the sequential search. Higher values trade some
+    # search quality for wall-clock time: later picks are made without the results of
+    # the episodes still running, and siblings launched together cannot read each
+    # other's summaries.
+    parallelism: int = Field(default=1, ge=1)
+
 
 class SearchEngine:
-    """Runs one search. Sequential in v0.1; parallel expansion is roadmapped."""
+    """Runs one search, expanding up to `config.parallelism` nodes at a time.
+
+    Everything runs on one event loop: episodes and evaluations overlap while they wait
+    on subprocesses, but the tree, the journal and git bookkeeping are only ever touched
+    between awaits, so they need no locking and the journal stays a valid tree.
+    """
 
     def __init__(
         self,
@@ -154,12 +166,45 @@ class SearchEngine:
     async def run(self) -> Tree:
         if self.tree.root is None:
             await self._init_root()
-        while self._within_budget() and not self.solved:
-            parent = self._select()
-            if parent is None:
-                break  # every node is at width/depth capacity
-            await self._expand(parent)
+        tasks: set[asyncio.Task[Node]] = set()
+        try:
+            while True:
+                while len(tasks) < self.config.parallelism and self._may_launch(len(tasks)):
+                    parent = self._select()
+                    if parent is None:
+                        break  # nothing expandable until an in-flight episode lands
+                    # `_begin` is synchronous on purpose: the new node is in the tree
+                    # before the next pick, so that pick sees the slot as taken.
+                    tasks.add(asyncio.create_task(self._finish(*self._begin(parent))))
+                if not tasks:
+                    break
+                done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()  # re-raise whatever an episode could not handle
+        except BaseException:
+            # Ctrl-C, or one episode blew up. Every other episode gets cancelled and is
+            # awaited, so each one snapshots its partial work before the run unwinds.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return self.tree
+
+    def _may_launch(self, in_flight: int) -> bool:
+        if not self._within_budget() or self.solved:
+            return False
+        if in_flight == 0 or not self.adapter.reports_cost:
+            return True
+        # Cost is only known when an episode ends, so episodes in flight are spending
+        # money that no total shows yet. Hold back the launch that would cross the
+        # ceiling if they each cost what a finished one did on average.
+        finished = [
+            (n.cost_usd or 0.0) + (n.eval_cost_usd or 0.0)
+            for n in self.tree.nodes.values()
+            if n.parent_id is not None and n.status is not NodeStatus.RUNNING
+        ]
+        expected = sum(finished) / len(finished) if finished else 0.0
+        return self.total_cost_usd + in_flight * expected < self.config.max_cost_usd
 
     # -- setup ---------------------------------------------------------------
 
@@ -211,15 +256,33 @@ class SearchEngine:
             return False
         return all((n.reward or 0.0) < self.config.low_reward for n in line[-streak:])
 
+    def _in_flight(self, node: Node) -> int:
+        """Episodes still running in `node`'s subtree."""
+        return sum(
+            (child.status is NodeStatus.RUNNING) + self._in_flight(child)
+            for child in self.tree.children(node.id)
+        )
+
+    def _visits(self, node: Node) -> int:
+        """Visits including episodes in flight below the node (virtual loss).
+
+        Counting a running episode as a visit that has returned nothing yet lowers the
+        node's mean and its exploration bonus, which steers concurrent picks toward
+        other branches. Nothing is stored, so there is nothing to undo when it lands.
+        """
+        return node.visits + self._in_flight(node)
+
     def _value(self, node: Node) -> float:
         """A node's worth for selection, per the configured backup rule."""
-        best = node.value_max if node.value_max is not None else node.q
+        visits = self._visits(node)
+        mean = node.value_sum / visits if visits else 0.0
+        best = node.value_max if node.value_max is not None else mean
         if self.config.backup == "max":
             return best
         if self.config.backup == "mix":
             mix = self.config.backup_mix
-            return mix * best + (1 - mix) * node.q
-        return node.q
+            return mix * best + (1 - mix) * mean
+        return mean
 
     def _depth_term(self, node: Node) -> float:
         cfg = self.config
@@ -235,7 +298,7 @@ class SearchEngine:
         return any(self._subtree_has_capacity(c) for c in self.tree.children(node.id))
 
     def _uct(self, parent: Node, child: Node) -> float:
-        explore = math.sqrt(math.log(max(parent.visits, 1)) / max(child.visits, 1))
+        explore = math.sqrt(math.log(max(self._visits(parent), 1)) / max(self._visits(child), 1))
         return self._value(child) + self.config.c_uct * explore + self._depth_term(child)
 
     def next_to_expand(self) -> Node | None:
@@ -277,12 +340,26 @@ class SearchEngine:
     # -- expansion -----------------------------------------------------------
 
     async def _expand(self, parent: Node) -> Node:
-        siblings = [c.summary for c in self.tree.children(parent.id)]
+        return await self._finish(*self._begin(parent))
+
+    def _begin(self, parent: Node) -> tuple[Node, Node, Path]:
+        """Create the child node and its worktree; returns (node, parent, workdir)."""
+        children = self.tree.children(parent.id)
+        siblings = [c.summary for c in children]
+        # Siblings still running have no summary to steer away from. Tell this attempt
+        # which one it is, so concurrent attempts spread out without seeing each other.
+        slot = len(children) + 1 if any(c.status is NodeStatus.RUNNING for c in children) else 0
         if parent.parent_id is None:
-            prompt = prompts.root_attempt_prompt(self.tree.meta.task, parent.eval_detail, siblings)
+            prompt = prompts.root_attempt_prompt(
+                self.tree.meta.task, parent.eval_detail, siblings, parallel_slot=slot
+            )
         else:
             prompt = prompts.revision_prompt(
-                self.tree.meta.task, parent.reward or 0.0, parent.eval_detail, siblings
+                self.tree.meta.task,
+                parent.reward or 0.0,
+                parent.eval_detail,
+                siblings,
+                parallel_slot=slot,
             )
 
         node = self.tree.add(
@@ -294,8 +371,20 @@ class SearchEngine:
             )
         )
         self._journal([node])
+        try:
+            workdir = self.worktrees.create(node.id, base=parent.branch)
+        except BaseException:
+            # No worktree means no episode: do not leave a node that claims to be running.
+            node.status = NodeStatus.FAILED
+            node.reward = 0.0
+            node.eval_detail = "could not create a worktree for this attempt"
+            self._journal([node])
+            raise
+        return node, parent, workdir
 
-        workdir = self.worktrees.create(node.id, base=parent.branch)
+    async def _finish(self, node: Node, parent: Node, workdir: Path) -> Node:
+        """Run the episode and its evaluation for a node `_begin` created."""
+        prompt = node.prompt
         try:
             result = await self.adapter.run_episode(
                 prompt, workdir, resume_session=parent.session_id

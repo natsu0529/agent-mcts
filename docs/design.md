@@ -62,6 +62,29 @@ with spare width. Three settings change that, all off by default.
 - **`give_up_after`** stops revising a line of attempts once its last N nodes all scored
   below `low_reward`.
 
+## Parallel expansion
+
+`parallelism = N` keeps up to N episodes in flight. The design goal was to add
+concurrency without adding shared mutable state.
+
+- **One event loop, no locks.** Episodes and evaluations overlap only while awaiting
+  subprocesses. The tree, the journal and git bookkeeping are touched between awaits, so
+  every journal line is still a valid tree.
+- **`_begin` is synchronous.** The child node and its worktree exist before the next
+  pick is made, so that pick sees the slot as taken. `_finish` runs the episode.
+- **Virtual loss is computed, not stored.** A node's effective visit count is its real
+  visits plus the episodes running in its subtree. That lowers its mean and exploration
+  bonus while they run, and there is nothing to undo when they land or to repair after a
+  crash.
+- **Cost reservation.** Cost arrives only when an episode ends. Each episode in flight is
+  assumed to cost the average of finished ones, and a launch that would cross the ceiling
+  waits.
+- **Unwinding.** On Ctrl-C or an unexpected error in one episode, every other episode is
+  cancelled and awaited, so each snapshots its partial work.
+- **Diversity without communication.** Siblings launched together have no summaries to
+  steer away from. Each is told its slot number and asked to take the correspondingly
+  ranked approach.
+
 ## Value: tests plus an optional LLM judge
 
 The default value function runs the project's test command: exit 0 scores 1.0, otherwise
