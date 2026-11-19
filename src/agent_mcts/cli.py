@@ -108,6 +108,10 @@ def run(
         float | None,
         typer.Option("--agent-timeout", help="Maximum seconds for each agent episode."),
     ] = None,
+    parallel: Annotated[
+        int | None,
+        typer.Option("-j", "--parallel", min=1, help="Episodes to run at the same time."),
+    ] = None,
     judge: Annotated[
         bool | None,
         typer.Option(
@@ -127,6 +131,8 @@ def run(
         cfg.search.max_nodes = max_nodes
     if max_cost is not None:
         cfg.search.max_cost_usd = max_cost
+    if parallel is not None:
+        cfg.search.parallelism = parallel
 
     value_command = value or cfg.value.command or project.detect_value_command(repo)
     if value_command is None:
@@ -221,6 +227,7 @@ def _print_plan(
         f"Agent: [bold]{backends.agent_name}[/] · "
         f"Value: [bold]{cfg.value.command}{backends.judge_label}[/] · "
         f"Budget: {budget} · Timeout: {timeout_s:.0f}s/episode"
+        + (f" · Parallel: {cfg.search.parallelism}" if cfg.search.parallelism > 1 else "")
     )
 
 
@@ -312,6 +319,10 @@ def resume(
     max_cost: Annotated[
         float | None, typer.Option("--max-cost", help="New total cost ceiling in USD.")
     ] = None,
+    parallel: Annotated[
+        int | None,
+        typer.Option("-j", "--parallel", min=1, help="Episodes to run at the same time."),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Continue an interrupted or budget-limited search where it stopped."""
@@ -353,6 +364,8 @@ def resume(
         cfg.search.max_nodes = max_nodes
     if max_cost is not None:
         cfg.search.max_cost_usd = max_cost
+    if parallel is not None:
+        cfg.search.parallelism = parallel  # a pace, not a scoring rule: safe to change
 
     backends = _build_backends(meta.agent, cfg=cfg, timeout_s=timeout_s)
     unknown = frozenset(

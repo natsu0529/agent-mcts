@@ -115,11 +115,12 @@ backup = "mean"                   # "mean" (classic UCT), "max" (best in subtree
 selection = "descend"             # or "global": best expandable node anywhere in the tree
 depth_bonus = 0.0                 # with "global": + depth_bonus * exp(-depth_bonus_decay * (d - 1))
 depth_penalty = 0.0               # with "global": - depth_penalty * sqrt(d)
+parallelism = 1                   # episodes in flight at once (`-j`); see "Running in parallel"
 give_up_after = 0                 # stop revising a line after this many low scores in a row
 low_reward = 0.25                 # what counts as a low score for give_up_after
 ```
 
-CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `-j/--parallel`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
 
 ### LLM judge
 
@@ -132,6 +133,18 @@ Tests alone stop being useful once they pass: on an already-green suite every at
 - If the judge times out or replies without a score, the attempt is scored on its tests alone (the judge half counts as 0) instead of being marked failed.
 
 `agent-mcts show <node>` prints both components and the critique.
+
+### Running in parallel
+
+An episode takes minutes, and a sequential search runs them one after another. `-j 3` (or `parallelism = 3`) keeps up to three episodes in flight, each in its own worktree.
+
+- **The budget holds.** Episodes in flight count toward `max_nodes`. For the dollar ceiling, each episode in flight is assumed to cost what finished ones did on average, and a launch that would cross the ceiling is held back. Cost is only reported when an episode ends, so the run can still overshoot by the episodes already in flight.
+- **Picks avoid each other.** A running episode counts as a visit that has returned nothing yet (virtual loss), which steers the next pick toward a different branch.
+- **Attempts started together cannot read each other's summaries.** Each is told which attempt it is and asked to take the correspondingly ranked approach, so they spread out anyway.
+- **Ctrl-C** snapshots the partial work of every episode in flight.
+- **What you give up:** later picks are made without the results of episodes still running, so the same budget searches a little less cleverly. Your value command also runs concurrently in different worktrees, so it must not depend on a fixed port or a shared file outside the worktree.
+
+A good starting point is `-j` equal to `root_width` (3 by default): the first attempts are independent anyway.
 
 ### Resuming a run
 
@@ -162,7 +175,7 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
 - [x] **v0.2** — Codex CLI adapter, episode-count budget for agents that report no dollar cost, recoverable timed-out and interrupted episodes
-- [ ] **v0.3** — LLM-as-judge value fn (done), `resume` (done), parallel expansion, Kimi CLI adapter
+- [ ] **v0.3** — LLM-as-judge value fn (done), `resume` (done), parallel expansion (done), Kimi CLI adapter
 - [ ] **v0.4** — in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
 ## Contributing
