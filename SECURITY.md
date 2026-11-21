@@ -10,7 +10,7 @@ This project is pre-1.0. Only the latest released version on PyPI receives secur
 
 Report privately through GitHub Security Advisories:
 
-👉 https://github.com/natsu0529/mcts-llm-agent/security/advisories/new
+👉 https://github.com/natsu0529/agent-mcts/security/advisories/new
 
 Include what you can: affected version, a description of the issue, and steps to
 reproduce. You can expect an initial response within 7 days.

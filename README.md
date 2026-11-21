@@ -8,6 +8,18 @@
 
 > **Status: v0.3.** Early but real — the full loop (search → live tree → apply) works today with Claude Code and Codex CLI. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
+## Does it help?
+
+First measurement ([bench/](bench/README.md), v0.3.0, Claude Code with `haiku`, 5-episode budget, 3 tasks × 2 repeats). Each answer is scored on hidden tests the agent never sees:
+
+| | mean | worst | wall time |
+|---|---:|---:|---:|
+| single agent run | 90% | **35%** | ~3 min |
+| agent-mcts, tests only | 93% | 71% | ~3 min |
+| agent-mcts, with `--judge` | **99%** | **98%** | ~21 min |
+
+The gain is in the bad cases: a single run returned a poor answer in 3 of 12 tries, and the search with the judge never did. That costs about 5× the episodes and 7× the wall time. This is a small sample on easy tasks, so treat it as a first signal, not a result; harder tasks and more repeats are next.
+
 ## Why
 
 Production coding agents (Claude Code, Codex, Kimi, ...) run a **single linear loop**: act, observe, retry in place. No branching, no backtracking, no principled exploration.
@@ -72,7 +84,7 @@ agent-mcts apply n2    # ...or pick a different branch
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
-- **Value function = your tests.** Exit 0 scores 1.0; a failing run earns partial credit by pass ratio (read from pytest, jest, cargo test, go test and JUnit-style summaries), and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--judge` to have an LLM score each attempt's diff as well — see [LLM judge](#llm-judge).
+- **Value function = your tests.** Exit 0 scores 1.0; a failing run earns partial credit by pass ratio (read from pytest, jest, cargo test, go test and JUnit-style summaries), and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--judge` to have an LLM score each attempt's diff as well — see [LLM judge](docs/configuration.md#llm-judge).
 - **Every node is a git branch** (`agent-mcts/<run>/<node>`), so `apply` is an ordinary squash merge and everything is auditable after the fact. Worktrees are disposable; branches are the record.
 - **Every state change is journaled** (append-only jsonl per run), so an interrupted search is still a valid, inspectable tree.
 
@@ -91,87 +103,22 @@ Zero config required. When you need it, `.agent-mcts.toml`:
 
 ```toml
 agent = "claude"                  # or "codex"
-model = "haiku"                   # optional agent-model override
-
-[claude]
-timeout_s = 1200                  # wall-clock limit for each agent episode
-allowed_tools = ["Bash(go test *)"] # optional additional headless permissions
 
 [value]
 command = "pytest tests/ -x -q"   # exit code + pass ratio → score in [0, 1]
-judge = true                      # also score each attempt with an LLM judge (default false)
-judge_model = "haiku"             # optional cheaper model for the judge only
-w_test = 0.5                      # reward = w_test * tests + w_judge * judge
-w_judge = 0.5
+judge = true                      # also score each attempt with an LLM judge
 
 [search]
 max_nodes = 20                    # episode budget
-max_cost_usd = 10.0               # ceiling on costs reported by completed episodes (Claude)
-c_uct = 1.414                     # UCT exploration constant — yes, it's exposed
-root_width = 3                    # diverse first attempts under the root
-refine_width = 2                  # revision children per node
-max_depth = 3
-backup = "mean"                   # "mean" (classic UCT), "max" (best in subtree) or "mix"
-selection = "descend"             # or "global": best expandable node anywhere in the tree
-depth_bonus = 0.0                 # with "global": + depth_bonus * exp(-depth_bonus_decay * (d - 1))
-depth_penalty = 0.0               # with "global": - depth_penalty * sqrt(d)
-parallelism = 1                   # episodes in flight at once (`-j`); see "Running in parallel"
-give_up_after = 0                 # stop revising a line after this many low scores in a row
-low_reward = 0.25                 # what counts as a low score for give_up_after
+max_cost_usd = 10.0
+parallelism = 3                   # episodes in flight at once (`-j`)
 ```
 
-CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `-j/--parallel`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
-
-### LLM judge
-
-Tests alone stop being useful once they pass: on an already-green suite every attempt scores 1.0, the search ends after one episode, and an attempt that deleted the failing test looks perfect. With `--judge` (or `judge = true`), each attempt is also scored by an LLM, as in SWE-Search's value agent:
-
-- The judge reads the task, the attempt's cumulative diff and the test output, and returns a score from -100 to 100 plus a one-paragraph critique. It is told to score an attempt strongly negative if tests were deleted, skipped or weakened.
-- The node's reward is `w_test * tests + w_judge * judge` (the judge score is mapped to [0, 1]). An attempt that changed nothing is not judged and gets a judge score of 0, so it can no longer tie with real work.
-- The critique is fed into the revision prompts of that node's children, ahead of the test output.
-- The judge runs through the same agent CLI as the search (`judge_agent` and `judge_model` override that), in an empty scratch directory so it cannot edit the code it scores. Its spend counts toward `max_cost_usd` but not toward `max_nodes`.
-- If the judge times out or replies without a score, the attempt is scored on its tests alone (the judge half counts as 0) instead of being marked failed.
-
-- **Final comparison.** Per-node scores are noisy, and two good attempts often land within a point of each other. When the search ends, the attempts within `select_margin` (0.1) of the best, up to `select_top_k` (3), are compared head to head in one more judge call, and its pick is what `apply` offers. With a clear winner there is nothing to compare and no call is made. Turn it off with `select = false`.
-
-- **Sibling ranking (optional).** With `relative = true`, the attempts that share a parent are also ranked against each other each time a new one arrives, and that standing counts in choosing which one to revise next (`[search] sibling_weight`, 0.5). It does not change rewards or what `apply` offers. It costs one more judge call per attempt after a group's first.
-
-`agent-mcts show <node>` prints both components and the critique.
-
-### Running in parallel
-
-An episode takes minutes, and a sequential search runs them one after another. `-j 3` (or `parallelism = 3`) keeps up to three episodes in flight, each in its own worktree.
-
-- **The budget holds.** Episodes in flight count toward `max_nodes`. For the dollar ceiling, each episode in flight is assumed to cost what finished ones did on average, and a launch that would cross the ceiling is held back. Cost is only reported when an episode ends, so the run can still overshoot by the episodes already in flight.
-- **Picks avoid each other.** A running episode counts as a visit that has returned nothing yet (virtual loss), which steers the next pick toward a different branch.
-- **Attempts started together cannot read each other's summaries.** Each is told which attempt it is and asked to take the correspondingly ranked approach, so they spread out anyway.
-- **Ctrl-C** snapshots the partial work of every episode in flight.
-- **What you give up:** later picks are made without the results of episodes still running, so the same budget searches a little less cleverly. Your value command also runs concurrently in different worktrees, so it must not depend on a fixed port or a shared file outside the worktree.
-
-A good starting point is `-j` equal to `root_width` (3 by default): the first attempts are independent anyway.
-
-### Resuming a run
-
-`agent-mcts resume [run-id]` continues a run that was interrupted or ran out of budget. It reuses the run's journal and branches, so the tree keeps growing in place.
-
-- The run continues under the settings it was started with (value command, judge, model, search parameters), not under whatever `.agent-mcts.toml` says today. New nodes have to be scored the way the old ones were.
-- `-n` and `--max-cost` set new *totals* for the run. A run that used 12 of 12 episodes needs `resume -n 20` to run 8 more.
-- If earlier episodes were cut off before reporting their cost, `resume` says so and asks before continuing. The real spend so far is then higher than the figure shown.
-- An episode that was running when the process was killed outright is marked failed, and whatever its worktree held is snapshotted to its branch.
-
-### Failures, cost and timeouts
-
-If an episode times out, the agent process fails, or you hit Ctrl-C mid-episode, agent-mcts snapshots any partial changes onto that node's branch before cleaning up its worktree. The node remains failed and is never selected automatically, but you can inspect it with `agent-mcts show <node>` and explicitly recover it with `agent-mcts apply <node>`. These snapshots run with `--no-verify` and signing disabled so a repo's commit hooks cannot reject them; in the rare case a snapshot still fails, the worktree is left on disk and its path is printed instead of being deleted.
-
-Claude only reports cost in its final JSON payload, so any episode cut off before that payload arrives — a timeout, a crash, unparseable output, Ctrl-C — is shown with unknown rather than zero cost, and the search stops rather than claiming that subsequent calls still fit the cost ceiling.
-
-Some agents never report a dollar figure at all (Codex CLI meters tokens only). With such a backend `max_nodes` is the only hard budget: the plan line says so, `--max-cost` is not enforced (you get a warning if you set it), and the status line shows token counts instead of dollars.
-
-Both the agent and the value command are killed as whole process trees (POSIX process groups; `taskkill /F /T` on Windows), so `--agent-timeout` and the value-command timeout bound the real wall clock even when a subprocess outlives its parent, and Ctrl-C does not leave a test suite running against a worktree that is about to be deleted.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `-j/--parallel`) override the file.
 
 > **Python projects managed with uv:** the value command runs inside fresh worktrees, which don't inherit your virtualenv — use `command = "uv run pytest -q"` (or pass `--value "uv run pytest -q"`) so each worktree resolves its own environment.
 
-agent-mcts checks PyPI at most once a day and prints a one-line hint when a newer version exists; set `AGENT_MCTS_NO_UPDATE_CHECK=1` to disable.
+Every option, the [LLM judge](docs/configuration.md#llm-judge), [parallel runs](docs/configuration.md#running-in-parallel), [resuming](docs/configuration.md#resuming-a-run) and how [failures, cost and timeouts](docs/configuration.md#failures-cost-and-timeouts) are handled: [docs/configuration.md](docs/configuration.md).
 
 Search hyperparameters are first-class: this is built by an MCTS researcher and meant to double as a research harness for test-time search over real software tasks.
 

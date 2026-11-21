@@ -5,7 +5,7 @@
 1. On PyPI, create the project's **trusted publisher** (no API tokens needed):
    PyPI → your account → Publishing → "Add a new pending publisher" with
    - PyPI project name: `agent-mcts`
-   - Owner: `natsu0529` · Repository: `mcts-llm-agent`
+   - Owner: `natsu0529` · Repository: `agent-mcts` (renamed from `mcts-llm-agent` on 2026-11-21; update an existing publisher to match)
    - Workflow: `release.yml` · Environment: `pypi`
 2. On GitHub, create an environment named `pypi`
    (repo → Settings → Environments). Optionally require manual approval there —

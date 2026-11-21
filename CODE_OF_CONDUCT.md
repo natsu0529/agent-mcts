@@ -57,7 +57,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainer privately via a
-[GitHub private report](https://github.com/natsu0529/mcts-llm-agent/security/advisories/new)
+[GitHub private report](https://github.com/natsu0529/agent-mcts/security/advisories/new)
 or by direct message to [@natsu0529](https://github.com/natsu0529).
 All complaints will be reviewed and investigated promptly and fairly.
 

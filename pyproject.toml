@@ -42,9 +42,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/natsu0529/mcts-llm-agent"
-Repository = "https://github.com/natsu0529/mcts-llm-agent"
-Issues = "https://github.com/natsu0529/mcts-llm-agent/issues"
+Homepage = "https://github.com/natsu0529/agent-mcts"
+Repository = "https://github.com/natsu0529/agent-mcts"
+Issues = "https://github.com/natsu0529/agent-mcts/issues"
 
 [project.scripts]
 agent-mcts = "agent_mcts.cli:app"

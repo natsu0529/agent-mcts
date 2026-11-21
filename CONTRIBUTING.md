@@ -10,8 +10,8 @@ You need [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 pull request from a fork. So start by forking the repo on GitHub, then:
 
 ```bash
-gh repo fork natsu0529/mcts-llm-agent --clone   # or fork in the UI and clone your fork
-cd mcts-llm-agent
+gh repo fork natsu0529/agent-mcts --clone   # or fork in the UI and clone your fork
+cd agent-mcts
 uv sync --group dev
 ```
 
@@ -44,7 +44,7 @@ Work on a branch in your fork, never on `main`:
 git checkout -b my-change
 # ... make changes, run the checks above ...
 git push -u origin my-change
-gh pr create --repo natsu0529/mcts-llm-agent
+gh pr create --repo natsu0529/agent-mcts
 ```
 
 Then:
