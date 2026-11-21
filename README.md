@@ -2,11 +2,11 @@
 
 **Turn any coding agent into a tree-searching agent.**
 
-`agent-mcts` is an open-source (MIT) test-time search harness that wraps coding agents — Claude Code, Codex CLI, Kimi CLI — with Monte Carlo Tree Search. Instead of a single trajectory that either works or doesn't, your agent explores multiple solution branches, backtracks from dead ends, and concentrates budget on the most promising path.
+`agent-mcts` is an open-source (MIT) test-time search harness that wraps a coding agent CLI with Monte Carlo Tree Search. It is verified with Claude Code; see [Supported agents](#supported-agents) for the rest. Instead of a single trajectory that either works or doesn't, your agent explores multiple solution branches, backtracks from dead ends, and concentrates budget on the most promising path.
 
 ![agent-mcts searching, applying the best branch, and the resulting diff](demo/demo.gif)
 
-> **Status: v0.3.** Early but real — the full loop (search → live tree → apply) works today with Claude Code and Codex CLI. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
+> **Status: v0.3.** Early but real — the full loop (search → live tree → apply) works today with Claude Code. A Codex CLI adapter ships too, but so far it has only been tested against a fake `codex` binary. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
 ## Does it help?
 
@@ -34,7 +34,7 @@ Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410
 
 `agent-mcts` closes that gap:
 
-- **Bring your own agent.** A thin adapter layer speaks to each agent's headless mode (`claude -p`, `codex exec`, `kimi -p`). The search engine never knows which agent it's driving.
+- **Bring your own agent.** A thin adapter layer speaks to each agent's headless mode (`claude -p`; `codex exec` untested against the real CLI; `kimi -p` planned). The search engine never knows which agent it's driving.
 - **Real MCTS, not best-of-N.** UCT selection, expansion, evaluation, backup. Budget flows toward branches that look promising, away from dead ends.
 - **State you can trust.** Every node is an isolated `git worktree` + a forked agent session. Your working tree is never touched until *you* apply a result.
 - **Terminal-native.** Watch the tree grow live in your terminal. 100% Python, no browser required.
@@ -45,7 +45,7 @@ Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410
 uv tool install agent-mcts
 cd your-project
 agent-mcts run "fix the flaky test in tests/test_auth.py"
-agent-mcts run --agent codex "fix the flaky test in tests/test_auth.py"
+agent-mcts run --agent codex "fix the flaky test in tests/test_auth.py"   # untested with the real Codex CLI
 ```
 
 The run auto-detects your installed agent and your test command, then shows the plan before spending anything:
@@ -87,6 +87,7 @@ agent-mcts apply n2    # ...or pick a different branch
             ▼                  ▼                  ▼
      claude adapter      codex adapter      kimi adapter
       (claude -p)        (codex exec)        (kimi -p)
+       verified          fake-tested          planned
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
@@ -98,8 +99,8 @@ agent-mcts apply n2    # ...or pick a different branch
 
 | Agent | Headless | Session fork | Status |
 |---|---|---|---|
-| Claude Code | `claude -p` | native (`--fork-session`) | ✅ v0.1 |
-| Codex CLI | `codex exec --json` | context injection | ✅ v0.2 |
+| Claude Code | `claude -p` | native (`--fork-session`) | ✅ v0.1, verified |
+| Codex CLI | `codex exec --json` | context injection | v0.2, tested only against a fake `codex` binary |
 | Kimi CLI | `kimi -p` | context injection | planned (v0.4) |
 | Gemini CLI, OpenCode, ... | | | [adapter PRs welcome!](#contributing) |
 
