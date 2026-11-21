@@ -1,0 +1,108 @@
+{
+  "run_id": "20261121-205432",
+  "hidden_total": 78,
+  "nodes": [
+    {
+      "id": "n0",
+      "parent": null,
+      "depth": 0,
+      "status": "evaluated",
+      "reward": 0.0,
+      "test_score": 0.0,
+      "judge_score": 0.0,
+      "hidden": 0.0,
+      "cost_usd": 0.0,
+      "eval_cost_usd": 0.0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "n1",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.925,
+      "test_score": 1.0,
+      "judge_score": 0.85,
+      "hidden": 0.8461538461538461,
+      "cost_usd": 0.1702963,
+      "eval_cost_usd": 0.0768499,
+      "duration_s": 138.0
+    },
+    {
+      "id": "n2",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.9550000000000001,
+      "test_score": 1.0,
+      "judge_score": 0.91,
+      "hidden": 0.8974358974358975,
+      "cost_usd": 0.15000610000000003,
+      "eval_cost_usd": 0.0524229,
+      "duration_s": 89.8
+    },
+    {
+      "id": "n3",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.9550000000000001,
+      "test_score": 1.0,
+      "judge_score": 0.91,
+      "hidden": 0.8846153846153846,
+      "cost_usd": 0.3385646,
+      "eval_cost_usd": 0.060703900000000005,
+      "duration_s": 277.7
+    },
+    {
+      "id": "n4",
+      "parent": "n2",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.9325,
+      "test_score": 1.0,
+      "judge_score": 0.865,
+      "hidden": 0.9230769230769231,
+      "cost_usd": 0.23565570000000002,
+      "eval_cost_usd": 0.058960900000000004,
+      "duration_s": 134.7
+    },
+    {
+      "id": "n5",
+      "parent": "n3",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.935,
+      "test_score": 1.0,
+      "judge_score": 0.87,
+      "hidden": 0.9358974358974359,
+      "cost_usd": 0.30807189999999995,
+      "eval_cost_usd": 0.0527509,
+      "duration_s": 110.4
+    }
+  ],
+  "chosen": "n2",
+  "chosen_hidden": 0.8974358974358975,
+  "best_by_reward": "n2",
+  "selection": {
+    "node_id": "n2",
+    "candidates": [
+      "n2",
+      "n5",
+      "n3"
+    ],
+    "explanation": "All three candidates pass the tests and implement ISO 8601 duration parsing correctly. n2 provides a complete, self-contained implementation with explicit validation (component ordering, year range checks) and no collateral damage\u2014its main drawback is the monolithic 211-line structure. n3 and n5 both use modular regex-based parsing with better code organization, but both add an unrequested test_manual.py file. Critically, n3 and n5 have truncated diffs making complete verification impossible; however, n5 is visibly more robust with try/except overflow handling around timedelta operations, while n3 shows no such protection. n2's explicit error handling and clean diff (no extra files) outweigh its structural verbosity compared to incomplete diffs that cannot be fully verified.",
+    "error": "",
+    "cost_usd": 0.06772890000000001,
+    "cost_known": true,
+    "usage": null
+  },
+  "selections_made": 1,
+  "task": "duration",
+  "arm": "judge",
+  "rep": 4,
+  "wall_s": 1231.6,
+  "exit_code": 0,
+  "model": "haiku",
+  "max_nodes": 5
+}

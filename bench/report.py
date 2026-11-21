@@ -19,8 +19,10 @@ def attempts(run: dict) -> list[dict]:
     return [n for n in run["nodes"] if n["parent"] is not None and n["hidden"] is not None]
 
 
-def main() -> None:
+def main(tasks: list[str] | None = None) -> None:
     runs = [json.loads(p.read_text()) for p in sorted(RESULTS.glob("*.json"))]
+    if tasks:
+        runs = [r for r in runs if r["task"] in tasks]
     if not runs:
         print("no results")
         return
@@ -60,6 +62,28 @@ def main() -> None:
             f"| {task} | {arm} | {len(rs)} | {mean(len(attempts(r)) for r in rs):.1f} | "
             f"{pct(mean(firsts) if firsts else None)} | {pct(mean(chosen))} | {pct(mean(best))} | "
             f"{mean(r['wall_s'] for r in rs) / 60:.1f} |"
+        )
+
+    print("\n## Within each run: the chosen answer against the first attempt\n")
+    print("The first attempt is what a single agent run would have returned, so this")
+    print("compares search and no search on the same run.\n")
+    print(
+        "| arm | runs | chosen better | same | chosen worse | mean change "
+        "| worst first | worst chosen |"
+    )
+    print("|---|---|---|---|---|---|---|---|")
+    for arm in sorted({r["arm"] for r in runs}):
+        pairs = []
+        for r in runs:
+            first = next((n["hidden"] for n in r["nodes"] if n["id"] == "n1"), None)
+            if r["arm"] == arm and first is not None:
+                pairs.append((first, r["chosen_hidden"] or 0.0))
+        d = [c - f for f, c in pairs]
+        print(
+            f"| {arm} | {len(pairs)} | {sum(x > 1e-9 for x in d)} | "
+            f"{sum(abs(x) <= 1e-9 for x in d)} | {sum(x < -1e-9 for x in d)} | "
+            f"{100 * mean(d):+.1f} pt | {pct(min(f for f, _ in pairs))} | "
+            f"{pct(min(c for _, c in pairs))} |"
         )
 
     print("\n## Does the reward rank attempts the way the hidden tests do?\n")

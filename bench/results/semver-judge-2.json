@@ -1,0 +1,107 @@
+{
+  "run_id": "20261121-200240",
+  "hidden_total": 79,
+  "nodes": [
+    {
+      "id": "n0",
+      "parent": null,
+      "depth": 0,
+      "status": "evaluated",
+      "reward": 0.0,
+      "test_score": 0.0,
+      "judge_score": 0.0,
+      "hidden": 0.0,
+      "cost_usd": 0.0,
+      "eval_cost_usd": 0.0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "n1",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.9199999999999999,
+      "test_score": 1.0,
+      "judge_score": 0.84,
+      "hidden": 0.8354430379746836,
+      "cost_usd": 0.3912054,
+      "eval_cost_usd": 0.07989320000000001,
+      "duration_s": 252.3
+    },
+    {
+      "id": "n2",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.5449999999999999,
+      "test_score": 0.5,
+      "judge_score": 0.59,
+      "hidden": 0.4177215189873418,
+      "cost_usd": 0.1485916,
+      "eval_cost_usd": 0.0633959,
+      "duration_s": 70.9
+    },
+    {
+      "id": "n3",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.6799999999999999,
+      "test_score": 0.75,
+      "judge_score": 0.61,
+      "hidden": 0.6329113924050633,
+      "cost_usd": 0.38752119999999995,
+      "eval_cost_usd": 0.0439359,
+      "duration_s": 243.7
+    },
+    {
+      "id": "n4",
+      "parent": "n1",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.9425,
+      "test_score": 1.0,
+      "judge_score": 0.885,
+      "hidden": 0.8354430379746836,
+      "cost_usd": 0.3648391,
+      "eval_cost_usd": 0.0630619,
+      "duration_s": 103.1
+    },
+    {
+      "id": "n5",
+      "parent": "n3",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.6950000000000001,
+      "test_score": 0.75,
+      "judge_score": 0.64,
+      "hidden": 0.6329113924050633,
+      "cost_usd": 0.5229269,
+      "eval_cost_usd": 0.047311900000000004,
+      "duration_s": 241.7
+    }
+  ],
+  "chosen": "n4",
+  "chosen_hidden": 0.8354430379746836,
+  "best_by_reward": "n4",
+  "selection": {
+    "node_id": "n4",
+    "candidates": [
+      "n4",
+      "n1"
+    ],
+    "explanation": "Both candidates present identical implementations in all visible portions of the diff: they have the same Version class with identical comparison logic, the same helper functions (parse_version_in_range, expand_range, match_comparator, match_comparator_set), and identical handling of edge cases like prerelease matching rules and hyphen ranges. Both pass all four tests with identical output (\"....  [100%] 4 passed in 0.00s\"). The diffs are truncated at the same line (\"# Right side: if partial, treat\"), preventing visibility into whether any differences exist in the unshown portion. Based on all available evidence\u2014identical visible code, identical test results, and comprehensive implementations shown\u2014these appear to be equivalent solutions that both correctly implement the spec.",
+    "error": "",
+    "cost_usd": 0.0414959,
+    "cost_known": true,
+    "usage": null
+  },
+  "selections_made": 1,
+  "task": "semver",
+  "arm": "judge",
+  "rep": 2,
+  "wall_s": 1190.3,
+  "exit_code": 0,
+  "model": "haiku",
+  "max_nodes": 5
+}

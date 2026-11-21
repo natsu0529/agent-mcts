@@ -1,0 +1,108 @@
+{
+  "run_id": "20261121-200240",
+  "hidden_total": 79,
+  "nodes": [
+    {
+      "id": "n0",
+      "parent": null,
+      "depth": 0,
+      "status": "evaluated",
+      "reward": 0.0,
+      "test_score": 0.0,
+      "judge_score": 0.0,
+      "hidden": 0.0,
+      "cost_usd": 0.0,
+      "eval_cost_usd": 0.0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "n1",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.935,
+      "test_score": 1.0,
+      "judge_score": 0.87,
+      "hidden": 0.9113924050632911,
+      "cost_usd": 0.4280025,
+      "eval_cost_usd": 0.0933469,
+      "duration_s": 320.1
+    },
+    {
+      "id": "n2",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.9299999999999999,
+      "test_score": 1.0,
+      "judge_score": 0.86,
+      "hidden": 0.6835443037974683,
+      "cost_usd": 0.33386429999999995,
+      "eval_cost_usd": 0.0639889,
+      "duration_s": 220.7
+    },
+    {
+      "id": "n3",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.9199999999999999,
+      "test_score": 1.0,
+      "judge_score": 0.84,
+      "hidden": 0.569620253164557,
+      "cost_usd": 0.20773599999999998,
+      "eval_cost_usd": 0.041912899999999996,
+      "duration_s": 148.2
+    },
+    {
+      "id": "n4",
+      "parent": "n1",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.9375,
+      "test_score": 1.0,
+      "judge_score": 0.875,
+      "hidden": 0.9113924050632911,
+      "cost_usd": 0.44069410000000003,
+      "eval_cost_usd": 0.06127289999999999,
+      "duration_s": 185.8
+    },
+    {
+      "id": "n5",
+      "parent": "n2",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.9550000000000001,
+      "test_score": 1.0,
+      "judge_score": 0.91,
+      "hidden": 0.6835443037974683,
+      "cost_usd": 0.3510939,
+      "eval_cost_usd": 0.0842109,
+      "duration_s": 169.9
+    }
+  ],
+  "chosen": "n5",
+  "chosen_hidden": 0.6835443037974683,
+  "best_by_reward": "n5",
+  "selection": {
+    "node_id": "n5",
+    "candidates": [
+      "n5",
+      "n4",
+      "n1"
+    ],
+    "explanation": "All three candidates pass the basic tests, but they differ significantly in design and robustness. n5 uses an object-oriented approach with a proper `Version` class and comparison operators, comprehensive type hints, and regex-based validation of semantic versions. This is more maintainable and follows Python idioms. n5's regex pattern `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$` is more robust and declarative than manual string parsing\u2014it enforces the no-leading-zeros constraint through pattern design rather than post-hoc validation. n4 and n1 appear to be identical implementations (they have the same git index hash `4e380d9` and show the same code structure), using a dict-based approach with manual string splitting on `+` and `-` characters. While functional, this approach is less Pythonic and more error-prone. The dict-based implementations do handle an uppercase 'V' prefix variant that n5 doesn't, which may or may not be needed depending on the README spec. Without access to the full implementation or the README specification for all edge cases, the OOP design quality and validation robustness of n5 makes it the stronger solution; n4 and n1 are equivalent to each other.",
+    "error": "",
+    "cost_usd": 0.0580349,
+    "cost_known": true,
+    "usage": null
+  },
+  "selections_made": 1,
+  "task": "semver",
+  "arm": "judge",
+  "rep": 1,
+  "wall_s": 1460.1,
+  "exit_code": 0,
+  "model": "haiku",
+  "max_nodes": 5
+}

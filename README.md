@@ -10,21 +10,21 @@
 
 ## Does it help?
 
-First measurement ([bench/](bench/README.md), v0.3.0, Claude Code with `haiku`, 5-episode budget, 3 tasks × 2 repeats). Each answer is scored on hidden tests the agent never sees:
+Not yet, on the tasks measured so far ([bench/](bench/README.md), v0.3.0, Claude Code with `haiku`, 5-episode budget). Each answer is scored on hidden tests the agent never sees, and compared with the first attempt of the same run, which is what a single agent run would have returned. Two harder tasks (npm semver ranges, ISO 8601 durations), 10 runs per setting:
 
-| | mean | worst | wall time |
-|---|---:|---:|---:|
-| single agent run | 90% | **35%** | ~3 min |
-| agent-mcts, tests only | 93% | 71% | ~3 min |
-| agent-mcts, with `--judge` | **99%** | **98%** | ~21 min |
+| | answer better than the first attempt | same | worse | mean change | wall time |
+|---|---:|---:|---:|---:|---:|
+| agent-mcts, tests only | 0 | 9 | 1 | −2.2 pt | ~5 min |
+| agent-mcts, with `--judge` | 4 | 4 | 2 | −0.1 pt | ~23 min |
 
 What the per-run numbers show:
 
-- **A failure the visible tests catch, the search recovers.** The 35% first attempt failed the visible tests; the search started a second, different approach from the root, and that one passed 100% of the hidden tests.
-- **A failure that passes the visible tests, tests-only search keeps.** The 71% and 87% first attempts were green on the visible tests, so the search stopped there. The judge exists for this case, but in the judge runs every first attempt already scored 98% or more, so this measurement does not show yet whether the judge catches it.
-- **The judge costs about 5× the episodes and 7× the wall time.**
+- **The judge rescues some failures that tests miss, and loses some good answers.** First attempts that passed the visible tests but scored 73% and 85% on the hidden ones became 86% and 90%. In another run the judge replaced a 91% first attempt with a 68% one it scored higher.
+- **The judge's ranking is the limit.** Between two attempts that both pass the visible tests, it picks the better one 38 times in 62.
+- **Tests-only search is close to a single run.** It stops at the first attempt that passes the visible tests, which was the first attempt in 9 of 10 runs.
+- **The judge costs 5× the episodes and about 5× the wall time.**
 
-Three tasks and two repeats cannot separate the effect from chance. Harder tasks and more repeats are next ([full report](bench/results/REPORT.md)).
+An earlier, smaller measurement on three easier tasks looked better (99% with the judge against 90% for a single attempt), but there every first attempt in the judge runs already scored 98% or more, so it never tested this case. Better judging is the next thing to work on ([full report](bench/results/REPORT.md)).
 
 ## Why
 

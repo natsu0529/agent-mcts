@@ -5,7 +5,7 @@ hidden tests, never shown to the agent, scores every node of every run.
 
     python bench/run.py validate                 # hidden tests pass on the references
     python bench/run.py run --work DIR [--reps 2] [--jobs 3] [--tasks ...] [--arms ...]
-    python bench/run.py report
+    python bench/run.py report [--tasks ...]
 
 `run` is resumable: a cell that already has a result file is skipped.
 """
@@ -35,9 +35,11 @@ PROMPT = (
     "is what counts."
 )
 
+# With several cells in flight the judge's replies slow down, and at the default 300 s
+# a judge timeout zeroes the judge half of a good attempt and halts the search.
 ARMS = {
     "tests": "judge = false\n",
-    "judge": "judge = true\n",
+    "judge": "judge = true\njudge_timeout_s = 900\n",
 }
 
 _HIDDEN_CONFTEST = """
@@ -174,8 +176,11 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
     shutil.copytree(
         TASKS / task / "repo", repo, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache")
     )
+    # Point pytest at tests/: agents leave scratch scripts such as test_manual.py at the
+    # repo root, and one that fails on import would zero the reward of a good attempt.
     (repo / ".agent-mcts.toml").write_text(
-        f'model = "{model}"\n\n[value]\ncommand = "{PYTHON} -m pytest -q -p no:cacheprovider"\n'
+        f'model = "{model}"\n\n[value]\n'
+        f'command = "{PYTHON} -m pytest -q -p no:cacheprovider tests"\n'
         f"{ARMS[arm]}\n[search]\nmax_nodes = {nodes}\nmax_cost_usd = 50.0\n"
     )
     git(repo, "init", "-q", "-b", "main")
@@ -291,10 +296,10 @@ def cmd_rescore(args: argparse.Namespace) -> None:
         print(path.stem, old["chosen"], old["chosen_hidden"])
 
 
-def cmd_report(_: argparse.Namespace) -> None:
+def cmd_report(args: argparse.Namespace) -> None:
     from report import main as report_main
 
-    report_main()
+    report_main(args.tasks)
 
 
 def main() -> None:
@@ -313,7 +318,9 @@ def main() -> None:
     p = sub.add_parser("rescore")
     p.add_argument("--work", required=True)
     p.set_defaults(fn=cmd_rescore)
-    sub.add_parser("report").set_defaults(fn=cmd_report)
+    p = sub.add_parser("report")
+    p.add_argument("--tasks", nargs="+", help="only these tasks (default: all)")
+    p.set_defaults(fn=cmd_report)
     args = parser.parse_args()
     args.fn(args)
 

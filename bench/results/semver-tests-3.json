@@ -1,0 +1,57 @@
+{
+  "run_id": "20261121-220916",
+  "hidden_total": 79,
+  "nodes": [
+    {
+      "id": "n0",
+      "parent": null,
+      "depth": 0,
+      "status": "evaluated",
+      "reward": 0.0,
+      "test_score": null,
+      "judge_score": null,
+      "hidden": 0.0,
+      "cost_usd": 0.0,
+      "eval_cost_usd": 0.0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "n1",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.75,
+      "test_score": null,
+      "judge_score": null,
+      "hidden": 0.6075949367088608,
+      "cost_usd": 0.27656919999999996,
+      "eval_cost_usd": 0.0,
+      "duration_s": 217.4
+    },
+    {
+      "id": "n2",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 1.0,
+      "test_score": null,
+      "judge_score": null,
+      "hidden": 0.3924050632911392,
+      "cost_usd": 0.4179372000000001,
+      "eval_cost_usd": 0.0,
+      "duration_s": 230.7
+    }
+  ],
+  "chosen": "n2",
+  "chosen_hidden": 0.3924050632911392,
+  "best_by_reward": "n2",
+  "selection": null,
+  "selections_made": 0,
+  "task": "semver",
+  "arm": "tests",
+  "rep": 3,
+  "wall_s": 451.4,
+  "exit_code": 0,
+  "model": "haiku",
+  "max_nodes": 5
+}

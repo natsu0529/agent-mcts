@@ -1,0 +1,44 @@
+{
+  "run_id": "20261121-221047",
+  "hidden_total": 78,
+  "nodes": [
+    {
+      "id": "n0",
+      "parent": null,
+      "depth": 0,
+      "status": "evaluated",
+      "reward": 0.0,
+      "test_score": null,
+      "judge_score": null,
+      "hidden": 0.0,
+      "cost_usd": 0.0,
+      "eval_cost_usd": 0.0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "n1",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 1.0,
+      "test_score": null,
+      "judge_score": null,
+      "hidden": 0.9102564102564102,
+      "cost_usd": 0.2871642,
+      "eval_cost_usd": 0.0,
+      "duration_s": 188.0
+    }
+  ],
+  "chosen": "n1",
+  "chosen_hidden": 0.9102564102564102,
+  "best_by_reward": "n1",
+  "selection": null,
+  "selections_made": 0,
+  "task": "duration",
+  "arm": "tests",
+  "rep": 3,
+  "wall_s": 189.4,
+  "exit_code": 0,
+  "model": "haiku",
+  "max_nodes": 5
+}

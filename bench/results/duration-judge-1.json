@@ -1,0 +1,108 @@
+{
+  "run_id": "20261121-200240",
+  "hidden_total": 78,
+  "nodes": [
+    {
+      "id": "n0",
+      "parent": null,
+      "depth": 0,
+      "status": "evaluated",
+      "reward": 0.0,
+      "test_score": 0.0,
+      "judge_score": 0.0,
+      "hidden": 0.0,
+      "cost_usd": 0.0,
+      "eval_cost_usd": 0.0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "n1",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.95,
+      "test_score": 1.0,
+      "judge_score": 0.9,
+      "hidden": 0.9487179487179487,
+      "cost_usd": 0.1777692,
+      "eval_cost_usd": 0.038845899999999996,
+      "duration_s": 125.7
+    },
+    {
+      "id": "n2",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.9550000000000001,
+      "test_score": 1.0,
+      "judge_score": 0.91,
+      "hidden": 0.8974358974358975,
+      "cost_usd": 0.23909979999999997,
+      "eval_cost_usd": 0.08000690000000002,
+      "duration_s": 151.5
+    },
+    {
+      "id": "n3",
+      "parent": "n0",
+      "depth": 1,
+      "status": "evaluated",
+      "reward": 0.6875,
+      "test_score": 0.75,
+      "judge_score": 0.625,
+      "hidden": 0.7435897435897436,
+      "cost_usd": 0.1499255,
+      "eval_cost_usd": 0.0508049,
+      "duration_s": 108.3
+    },
+    {
+      "id": "n4",
+      "parent": "n2",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.9375,
+      "test_score": 1.0,
+      "judge_score": 0.875,
+      "hidden": 0.9230769230769231,
+      "cost_usd": 0.23704820000000001,
+      "eval_cost_usd": 0.0441519,
+      "duration_s": 48.7
+    },
+    {
+      "id": "n5",
+      "parent": "n1",
+      "depth": 2,
+      "status": "evaluated",
+      "reward": 0.9625,
+      "test_score": 1.0,
+      "judge_score": 0.925,
+      "hidden": 0.9487179487179487,
+      "cost_usd": 0.247301,
+      "eval_cost_usd": 0.0798769,
+      "duration_s": 135.8
+    }
+  ],
+  "chosen": "n5",
+  "chosen_hidden": 0.9487179487179487,
+  "best_by_reward": "n5",
+  "selection": {
+    "node_id": "n5",
+    "candidates": [
+      "n5",
+      "n1",
+      "n2"
+    ],
+    "explanation": "N5 and N1 are identical implementations using regex patterns to parse ISO 8601 duration components, with clean validation logic and `calendar.monthrange()` for handling day overflow in month arithmetic. N2 uses manual character-by-character parsing with a two-pass validation approach and a try-loop for day overflow. While both approaches are correct (all pass tests), the regex-based n5/n1 implementation is superior: it's more concise (205 vs 236 lines), more idiomatic Python, and clearer in intent. The regex patterns cleanly express the allowed component structure, and `calendar.monthrange()` is the standard way to find valid days in a month. N2's manual parsing, while thorough with its two-pass validation and defensive try-loop, is more verbose and harder to follow without providing practical benefits in correctness or maintainability. The additional validation passes in n2 are redundant given the parsing already ensures components are in order and properly formed.",
+    "error": "",
+    "cost_usd": 0.05857489999999999,
+    "cost_known": true,
+    "usage": null
+  },
+  "selections_made": 1,
+  "task": "duration",
+  "arm": "judge",
+  "rep": 1,
+  "wall_s": 976.1,
+  "exit_code": 0,
+  "model": "haiku",
+  "max_nodes": 5
+}
