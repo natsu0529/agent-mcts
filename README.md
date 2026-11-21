@@ -18,7 +18,13 @@ First measurement ([bench/](bench/README.md), v0.3.0, Claude Code with `haiku`, 
 | agent-mcts, tests only | 93% | 71% | ~3 min |
 | agent-mcts, with `--judge` | **99%** | **98%** | ~21 min |
 
-The gain is in the bad cases: a single run returned a poor answer in 3 of 12 tries, and the search with the judge never did. That costs about 5× the episodes and 7× the wall time. This is a small sample on easy tasks, so treat it as a first signal, not a result; harder tasks and more repeats are next.
+What the per-run numbers show:
+
+- **A failure the visible tests catch, the search recovers.** The 35% first attempt failed the visible tests; the search started a second, different approach from the root, and that one passed 100% of the hidden tests.
+- **A failure that passes the visible tests, tests-only search keeps.** The 71% and 87% first attempts were green on the visible tests, so the search stopped there. The judge exists for this case, but in the judge runs every first attempt already scored 98% or more, so this measurement does not show yet whether the judge catches it.
+- **The judge costs about 5× the episodes and 7× the wall time.**
+
+Three tasks and two repeats cannot separate the effect from chance. Harder tasks and more repeats are next ([full report](bench/results/REPORT.md)).
 
 ## Why
 
