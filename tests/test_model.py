@@ -83,3 +83,60 @@ def test_best_ignores_failed_nodes() -> None:
     tree.add(Node(id="n1", parent_id="n0", reward=0.0, status=NodeStatus.FAILED))
     best = tree.best()
     assert best is not None and best.id == "n0"
+
+
+def scored(
+    tree: Tree, node_id: str, parent: str | None, reward: float, tests: float | None = None
+) -> None:
+    tree.add(
+        Node(
+            id=node_id,
+            parent_id=parent,
+            reward=reward,
+            test_score=tests,
+            status=NodeStatus.EVALUATED,
+        )
+    )
+
+
+def test_best_skips_a_baseline_only_the_extra_scorer_prefers() -> None:
+    # Generated tests that share the bug: the unfixed code passes more of them than the
+    # fix does, while both pass the project's own tests.
+    tree = make_tree()
+    scored(tree, "n0", None, 0.92, tests=1.0)
+    scored(tree, "n1", "n0", 0.76, tests=1.0)
+    scored(tree, "n2", "n0", 0.70, tests=1.0)
+    assert tree.best() is tree.nodes["n1"]
+    assert tree.baseline_outscored()
+
+
+def test_best_keeps_the_baseline_when_every_attempt_breaks_the_tests() -> None:
+    tree = make_tree()
+    scored(tree, "n0", None, 0.9, tests=1.0)
+    scored(tree, "n1", "n0", 0.6, tests=0.5)
+    assert tree.best() is tree.nodes["n0"]
+    assert not tree.baseline_outscored()
+
+
+def test_best_keeps_the_baseline_on_tests_alone() -> None:
+    # Without a judge or generated tests the reward is the tests.
+    tree = make_tree()
+    scored(tree, "n0", None, 0.6)
+    scored(tree, "n1", "n0", 0.3)
+    assert tree.best() is tree.nodes["n0"]
+
+
+def test_best_prefers_an_attempt_that_kept_the_tests() -> None:
+    tree = make_tree()
+    scored(tree, "n0", None, 0.92, tests=1.0)
+    scored(tree, "n1", "n0", 0.80, tests=0.5)  # higher reward, but broke a test
+    scored(tree, "n2", "n0", 0.70, tests=1.0)
+    assert tree.best() is tree.nodes["n2"]
+
+
+def test_baseline_outscored_is_false_when_an_attempt_wins_outright() -> None:
+    tree = make_tree()
+    scored(tree, "n0", None, 0.5, tests=1.0)
+    scored(tree, "n1", "n0", 0.9, tests=1.0)
+    assert tree.best() is tree.nodes["n1"]
+    assert not tree.baseline_outscored()
