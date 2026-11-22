@@ -18,6 +18,7 @@ from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, AgentBackend, ClaudeCodeAdapter, CodexCliAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
+from agent_mcts.core.generated import GeneratedTestsValueFunction, SuiteWriter, default_command
 from agent_mcts.core.judge import (
     FinalSelector,
     HybridValueFunction,
@@ -125,6 +126,14 @@ def run(
             help="Score each attempt with an LLM judge as well as the value command.",
         ),
     ] = None,
+    generate_tests: Annotated[
+        bool | None,
+        typer.Option(
+            "--generate-tests/--no-generate-tests",
+            help="Before the search, have an agent write tests from the task, and score "
+            "each attempt on them as well as on the value command.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Search for a solution to TASK with your coding agent."""
@@ -154,6 +163,18 @@ def run(
     agent_name = agent or cfg.agent
     if judge is not None:
         cfg.value.judge = judge
+    if generate_tests is not None:
+        cfg.value.generate_tests = generate_tests
+    if cfg.value.judge and cfg.value.generate_tests:
+        _fail("--judge and --generate-tests are alternatives; turn on one of them")
+    if cfg.value.generate_tests and cfg.value.generate_command is None:
+        cfg.value.generate_command = default_command(value_command)
+        if cfg.value.generate_command is None:
+            _fail(
+                "--generate-tests needs a command that runs one test file, and it can only "
+                "be derived from a pytest value command. Set \\[value].generate_command "
+                f'in {project.CONFIG_FILENAME}, e.g. "npx jest {{file}}".'
+            )
     cfg.model = model or cfg.model
     backends = _build_backends(agent_name, cfg=cfg, timeout_s=timeout_s)
 
@@ -184,7 +205,7 @@ def run(
         )
     )
     engine = _build_engine(tree, repo=repo, cfg=cfg, backends=backends)
-    _search_and_report(engine, cfg=cfg, judged=backends.judge is not None)
+    _search_and_report(engine, cfg=cfg, judged=backends.scores_beyond_command)
 
 
 @dataclass
@@ -193,11 +214,28 @@ class _Backends:
     agent: AgentBackend
     judge: AgentBackend | None
     judge_label: str  # "" or " + judge(<model>)", for the plan line
+    writer: AgentBackend | None = None  # writes the generated tests, when they are on
+
+    @property
+    def scores_beyond_command(self) -> bool:
+        """Whether something besides the value command ranks attempts."""
+        return self.judge is not None or self.writer is not None
 
 
 def _build_backends(agent_name: str, *, cfg: project.ProjectConfig, timeout_s: float) -> _Backends:
     try:
         adapter = _build_adapter(agent_name, cfg=cfg, model=cfg.model, timeout_s=timeout_s)
+        if cfg.value.generate_tests:
+            # The writer works on a throwaway copy of the base commit and only reads it.
+            writer = _build_adapter(
+                agent_name,
+                cfg=cfg,
+                model=cfg.model,
+                timeout_s=cfg.value.generate_timeout_s,
+                for_judge=True,
+            )
+            label = f" + {cfg.value.generate_suites} generated test suites"
+            return _Backends(agent_name, adapter, None, label, writer)
         if not cfg.value.judge:
             return _Backends(agent_name, adapter, None, "")
         judge_agent = cfg.value.judge_agent or agent_name
@@ -251,6 +289,18 @@ def _build_engine(
     value_fn: ValueFunction = CommandValueFunction(cfg.value.command)
     selector: FinalSelector | None = None
     sibling_ranker: SiblingRanker | None = None
+    if backends.writer is not None:
+        assert cfg.value.generate_command is not None
+        base_commit = meta.base_commit or project.head_commit(repo)
+        value_fn = GeneratedTestsValueFunction(
+            value_fn,
+            SuiteWriter(backends.writer, task=meta.task, repo=repo, base_commit=base_commit),
+            store=project.journal_path(repo, meta.run_id).parent / "generated",
+            command=cfg.value.generate_command,
+            suites=cfg.value.generate_suites,
+            w_test=cfg.value.w_test,
+            w_generated=cfg.value.w_generated,
+        )
     if backends.judge is not None:
         judge = LLMJudge(backends.judge, task=meta.task)
         base_commit = meta.base_commit or project.head_commit(repo)
@@ -318,7 +368,8 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
             "[yellow]warning:[/] the value command already passes on the untouched "
             "repository, so it cannot tell attempts apart: the search stops at the first "
             "attempt that keeps it passing, whatever that attempt did. Re-run with "
-            "[bold]--judge[/], or use a value command that fails until the task is done."
+            "[bold]--generate-tests[/] or [bold]--judge[/], or use a value command that "
+            "fails until the task is done."
         )
     _print_selection(tree)
     best = tree.best()
@@ -451,7 +502,7 @@ def resume(
         typer.confirm("Continue?", abort=True)
 
     engine.recover_interrupted()
-    _search_and_report(engine, cfg=cfg, judged=backends.judge is not None)
+    _search_and_report(engine, cfg=cfg, judged=backends.scores_beyond_command)
 
 
 def _spend_summary(engine: SearchEngine) -> str:
@@ -469,10 +520,11 @@ def _spend_summary(engine: SearchEngine) -> str:
 
 def _node_cost(node: Node) -> str:
     episode = _episode_cost(node)
+    # The judge's calls, or for the root of a generated-tests run, writing the tests.
     if not node.eval_cost_known:
-        return f"{episode} + judge unknown"
+        return f"{episode} + evaluation unknown"
     if node.eval_cost_usd:
-        return f"{episode} + judge ${node.eval_cost_usd:.2f}"
+        return f"{episode} + evaluation ${node.eval_cost_usd:.2f}"
     return episode
 
 
@@ -520,7 +572,10 @@ def show(
         _fail(f"no node {node} in run {tree.meta.run_id}")
     reward = "-" if found.reward is None else f"{found.reward:.2f}"
     status = f"{found.status.value}  reward={reward}  Q={found.q:.2f}  N={found.visits}"
-    if found.test_score is not None:
+    if found.test_score is not None and tree.meta.config.get("value", {}).get("generate_tests"):
+        generated = "-" if found.generated_score is None else f"{found.generated_score:.2f}"
+        status += f"  (tests={found.test_score:.2f} generated={generated})"
+    elif found.test_score is not None:
         judged = "-" if found.judge_score is None else f"{found.judge_score:.2f}"
         status += f"  (tests={found.test_score:.2f} judge={judged})"
     if found.sibling_score is not None:

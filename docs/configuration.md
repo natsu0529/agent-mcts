@@ -16,6 +16,10 @@ judge = true                      # also score each attempt with an LLM judge (d
 judge_model = "haiku"             # optional cheaper model for the judge only
 w_test = 0.5                      # reward = w_test * tests + w_judge * judge
 w_judge = 0.5
+# generate_tests = true           # or: score on tests an agent writes from the task (not with judge)
+# generate_suites = 3             # how many test files to write, once per run
+# generate_command = "npx jest {file}"  # runs one file; derived from `command` for pytest
+# w_generated = 0.5               # reward = w_test * tests + w_generated * generated tests
 
 [search]
 max_nodes = 20                    # episode budget
@@ -33,7 +37,7 @@ give_up_after = 0                 # stop revising a line after this many low sco
 low_reward = 0.25                 # what counts as a low score for give_up_after
 ```
 
-CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `-j/--parallel`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `--generate-tests/--no-generate-tests`, `-j/--parallel`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
 
 ## LLM judge
 
@@ -50,6 +54,21 @@ Tests alone stop being useful once they pass: on an already-green suite every at
 - **Sibling ranking (optional).** With `relative = true`, the attempts that share a parent are also ranked against each other each time a new one arrives, and that standing counts in choosing which one to revise next (`[search] sibling_weight`, 0.5). It does not change rewards or what `apply` offers. It costs one more judge call per attempt after a group's first.
 
 `agent-mcts show <node>` prints both components and the critique.
+
+## Generated tests
+
+The judge only reads diffs, and on the [benchmark](../bench/README.md) that was the weak point: between two attempts that both passed the visible tests, it picked the better one 38 times in 62. With `--generate-tests` (or `generate_tests = true`), attempts are scored on tests instead, written for this run before the search starts:
+
+- A separate agent episode reads the task and a copy of the repository at the base commit, never an attempt, and replies with a test file and the test directory it belongs in. This runs `generate_suites` (3) times, in parallel, through the same agent CLI and model as the search.
+- Each attempt is scored on every suite, one file at a time: the file is copied into the attempt's worktree, run with `generate_command`, and removed again, so it never lands on a node's branch. `generate_command` is derived from a pytest value command (`python -m pytest -q tests` → `python -m pytest -q -p no:cacheprovider {file}`); for other runners set it yourself, with `{file}` where the file's path goes.
+- The node's reward is `w_test * tests + w_generated * generated`, where `generated` is the mean pass ratio over the suites. Failing generated tests are quoted in children's revision prompts, marked as written by another agent and possibly wrong.
+- Some generated tests are wrong. On the benchmark nearly all of those failed on every attempt alike, so they barely changed the ranking: the mean over three suites picked the better attempt of a pair 58 times in 62.
+- The suites are stored with the run (`.agent-mcts/runs/<run>/generated/`), and `resume` scores new attempts on the same files. Writing them is charged to the baseline evaluation, so `show n0` shows its cost; it counts toward `max_cost_usd` but not toward `max_nodes`.
+- If no suite could be written, every attempt scores 0 on that half and the reason appears in its detail, so the tests alone decide.
+
+It is an alternative to the judge, not an addition: turn on one of them. `agent-mcts show <node>` prints `tests=` and `generated=`.
+
+On the benchmark (two tasks, 20 runs, `haiku`), the answer a run returned beat that run's first attempt in 16 runs and fell behind it in 2, +4.8 points of hidden tests on average; with the judge it was 11 and 4. Writing three suites cost about $0.43 per run. See [the results](../bench/README.md#third-measurement-generated-tests-20-runs-per-setting).
 
 ## Running in parallel
 

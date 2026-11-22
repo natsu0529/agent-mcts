@@ -24,8 +24,10 @@ class Evaluation(BaseModel):
     # Components, for value functions that combine signals (see `core.judge`).
     test_score: float | None = None
     judge_score: float | None = None  # None: no judge ran, or it produced no score
+    generated_score: float | None = None  # pass ratio on generated tests (`core.generated`)
 
-    # What the evaluation itself cost, when it spends money (an LLM judge does).
+    # What the evaluation itself cost, when it spends money (an LLM judge does, and so
+    # does writing the generated tests, charged to the evaluation that wrote them).
     cost_usd: float | None = 0.0  # None: the judge backend never reports dollars
     cost_known: bool = True  # False: the judge died after starting, spend is lost
     usage: TokenUsage | None = None

@@ -513,6 +513,7 @@ class SearchEngine:
         node.eval_detail = evaluation.detail
         node.test_score = evaluation.test_score
         node.judge_score = evaluation.judge_score
+        node.generated_score = evaluation.generated_score
         node.eval_cost_usd = evaluation.cost_usd
         node.eval_cost_known = evaluation.cost_known
         node.eval_usage = evaluation.usage

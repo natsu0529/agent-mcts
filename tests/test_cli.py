@@ -2,13 +2,14 @@
 (engine, worktrees, journal, value command, git)."""
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from typer.testing import CliRunner
 
-from agent_mcts import __version__, cli
+from agent_mcts import __version__, cli, project
 from agent_mcts.adapters.base import EpisodeResult, TokenUsage
 
 runner = CliRunner()
@@ -328,7 +329,7 @@ def test_run_with_judge_scores_and_reports_components(judged_repo: Path) -> None
 
     shown = runner.invoke(cli.app, ["show", "n1"]).output
     assert "tests=1.00 judge=0.80" in shown
-    assert "$0.50 + judge $0.05" in shown
+    assert "$0.50 + evaluation $0.05" in shown
     assert "solid but untested" in shown
 
 
@@ -347,6 +348,96 @@ def test_no_judge_flag_overrides_config(judged_repo: Path) -> None:
     (judged_repo / ".agent-mcts.toml").write_text("[value]\njudge = true\n")
     do_run(["-n", "1", "--no-judge"])
     assert FakeJudgingAdapter.judge_calls == 0
+
+
+class FakeTestWritingAdapter(FakeAdapter):
+    """Plays both roles: writes a file as the agent, writes a test file as the writer."""
+
+    writer_calls = 0
+    writer_files: ClassVar[list[list[str]]] = []
+
+    async def run_episode(
+        self, prompt: str, workdir: Path, *, resume_session: str | None = None
+    ) -> EpisodeResult:
+        if not prompt.startswith("Another agent will be asked"):
+            return await super().run_episode(prompt, workdir, resume_session=resume_session)
+        FakeTestWritingAdapter.writer_calls += 1
+        FakeTestWritingAdapter.writer_files.append(sorted(p.name for p in workdir.iterdir()))
+        suite = (
+            "from pathlib import Path\n\n"
+            "def test_attempt():\n"
+            "    assert Path('attempt.txt').exists()\n"
+        )
+        return EpisodeResult(
+            session_id=f"w{FakeTestWritingAdapter.writer_calls}",
+            summary=f"<TestFile>tests/test_a.py</TestFile>\n```python\n{suite}```\n",
+            cost_usd=0.1,
+        )
+
+
+@pytest.fixture
+def test_writing_repo(project_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeTestWritingAdapter)
+    FakeTestWritingAdapter.writer_calls = 0
+    FakeTestWritingAdapter.writer_files = []
+    command = f"{sys.executable} -m pytest -q -p no:cacheprovider {{file}}"
+    (project_repo / ".agent-mcts.toml").write_text(f"[value]\ngenerate_command = '{command}'\n")
+    return project_repo
+
+
+def test_run_with_generated_tests(test_writing_repo: Path) -> None:
+    output = do_run(["-n", "2", "--generate-tests"])
+
+    assert "+ 3 generated test suites" in output  # the plan line names them
+    # The baseline lacks attempt.txt, the first attempt makes every test pass.
+    assert "Search finished: 1 episodes" in output
+    assert "reward=1.00" in output
+    # One episode at $0.50, three suites at $0.10 charged to the baseline.
+    assert "$0.80" in output
+    assert FakeTestWritingAdapter.writer_calls == 3
+    assert all("app.py" in files for files in FakeTestWritingAdapter.writer_files)
+
+    assert "tests=1.00 generated=1.00" in runner.invoke(cli.app, ["show", "n1"]).output
+    root = runner.invoke(cli.app, ["show", "n0"]).output
+    assert "tests=0.00 generated=0.00" in root
+    assert "evaluation $0.30" in root
+    # The suites never land on a node's branch.
+    files = subprocess.run(
+        [
+            "git",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "agent-mcts/" + _latest_run(test_writing_repo) + "/n1",
+        ],
+        cwd=test_writing_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert not any("generated" in f for f in files)
+
+
+def _latest_run(repo: Path) -> str:
+    run = project.latest_run_id(repo)
+    assert run is not None
+    return run
+
+
+def test_generated_tests_and_judge_are_alternatives(test_writing_repo: Path) -> None:
+    result = runner.invoke(
+        cli.app, ["run", "fix it", "-y", "--value", VALUE_CMD, "--generate-tests", "--judge"]
+    )
+    assert result.exit_code == 1
+    assert "alternatives" in result.output
+
+
+def test_generated_tests_need_a_command_for_non_pytest_projects(project_repo: Path) -> None:
+    result = runner.invoke(
+        cli.app, ["run", "fix it", "-y", "--value", VALUE_CMD, "--generate-tests"]
+    )
+    assert result.exit_code == 1
+    assert "generate_command" in result.output
 
 
 def test_config_rejects_zero_weights(judged_repo: Path) -> None:

@@ -36,11 +36,27 @@ class ValueConfig(BaseModel):
     # With the judge on: rank each sibling group head to head as attempts arrive and use
     # the standing in selection. One extra judge call per attempt after a group's first.
     relative: bool = False
+    # Generated tests (see `core.generated`): before the search an agent writes test
+    # files from the task, and reward = w_test * tests + w_generated * generated tests.
+    # An alternative to the judge, not an addition: turn on one of the two.
+    generate_tests: bool = False
+    generate_suites: int = Field(default=3, ge=1)
+    # Runs one generated file; "{file}" is its path. Default: derived from `command`
+    # when that runs pytest.
+    generate_command: str | None = None
+    generate_timeout_s: float = Field(default=900.0, gt=0)  # per writer episode
+    w_generated: float = Field(default=0.5, ge=0)
 
     @model_validator(mode="after")
     def _weights_not_both_zero(self) -> Self:
         if self.w_test + self.w_judge <= 0:
             raise ValueError("w_test and w_judge cannot both be zero")
+        if self.w_test + self.w_generated <= 0:
+            raise ValueError("w_test and w_generated cannot both be zero")
+        if self.judge and self.generate_tests:
+            raise ValueError("judge and generate_tests cannot both be on; choose one")
+        if self.generate_command is not None and "{file}" not in self.generate_command:
+            raise ValueError("generate_command must contain {file}")
         return self
 
 

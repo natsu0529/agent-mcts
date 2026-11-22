@@ -40,6 +40,7 @@ PROMPT = (
 ARMS = {
     "tests": "judge = false\n",
     "judge": "judge = true\njudge_timeout_s = 900\n",
+    "generated": "generate_tests = true\n",
 }
 
 _HIDDEN_CONFTEST = """
@@ -252,6 +253,7 @@ def score_run(task: str, repo: Path) -> dict:
                 "reward": node.reward,
                 "test_score": node.test_score,
                 "judge_score": node.judge_score,
+                "generated_score": node.generated_score,
                 "hidden": hidden,
                 "cost_usd": node.cost_usd,
                 "eval_cost_usd": node.eval_cost_usd,

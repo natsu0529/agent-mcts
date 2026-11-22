@@ -38,6 +38,7 @@ class Node(BaseModel):
     eval_detail: str = ""  # value-function feedback (fed into children's revision prompts)
     test_score: float | None = None  # reward components, when the value fn reports them
     judge_score: float | None = None
+    generated_score: float | None = None
     # Standing among evaluated siblings from a head-to-head ranking: 1.0 best, 0.0
     # worst. Used for selection only — it means nothing outside its sibling group.
     sibling_score: float | None = None
