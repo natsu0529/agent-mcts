@@ -10,7 +10,7 @@
 
 ## Does it help?
 
-With generated tests, yes, on the two tasks measured so far ([bench/](bench/README.md), Claude Code with `haiku`, 5-episode budget). Each answer is scored on hidden tests the agent never sees, and compared with the first attempt of the same run, which is what a single agent run would have returned. Two tasks (npm semver ranges, ISO 8601 durations), 20 runs per setting:
+With generated tests, yes, on tasks with a written spec; on a vague bug report, so far only as much as the judge ([bench/](bench/README.md), Claude Code with `haiku`, 5-episode budget). Each answer is scored on hidden tests the agent never sees, and compared with the first attempt of the same run, which is what a single agent run would have returned. Two tasks with a spec (npm semver ranges, ISO 8601 durations), 20 runs per setting:
 
 | | answer better than the first attempt | same | worse | mean change | worst answer | wall time | cost per run |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -25,7 +25,9 @@ What the per-run numbers show:
 - **The judge reads diffs, and that is not enough.** Its mean gain comes from rescuing two broken first attempts (19% and 37%). Over the other 18 runs it averaged +0.0 pt, and in one it replaced a 91% first attempt with a 68% one.
 - **Tests-only search is close to a single run.** It stops at the first attempt that passes the visible tests.
 
-Caveats: two tasks, both with a precise written spec, which is where writing tests from the task works best; one model; 20 runs per setting. Details in the [full report](bench/results/REPORT.md).
+**A vague bug report is harder.** A third task gives the agent only a user's report that Japanese text misaligns a table (10 runs per setting). The test writer made the same mistake as the bug, measuring alignment in characters, so the unfixed code passed its tests and every fix failed them, and v0.4.0 returned the unfixed code in all 10 runs. agent-mcts now offers the unchanged code only when every attempt does worse on your own tests, and warns when the generated tests preferred it. On the same ten trees that gives 4 runs better than the first attempt and none worse (88% → 93%), level with the judge (3 better, none worse, 91% → 93%).
+
+Caveats: three small tasks, one model, 10 to 20 runs per setting. Details in the [full report](bench/results/REPORT.md).
 
 ## Why
 

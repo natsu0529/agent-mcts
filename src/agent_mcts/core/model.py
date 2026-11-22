@@ -93,6 +93,13 @@ class Selection(BaseModel):
     usage: TokenUsage | None = None
 
 
+def _own_tests(node: Node) -> float:
+    """The node's score on the project's own tests (its whole reward without a judge)."""
+    if node.test_score is not None:
+        return node.test_score
+    return node.reward or 0.0
+
+
 class Tree:
     """In-memory search tree. Persistence lives in `journal`; policy lives in the engine."""
 
@@ -162,6 +169,13 @@ class Tree:
 
         Ties prefer deeper nodes: an attempt that did work beats the untouched
         baseline scoring the same (e.g. both 1.0 on an already-green suite).
+
+        The untouched baseline is a candidate only when every attempt does worse than
+        it on the project's own tests. When an attempt keeps those tests where they
+        were, a higher baseline reward comes from the judge or the generated tests, and
+        those can share the very mistake the task is about: generated tests that
+        measure a table's alignment in characters rank the unfixed code above every
+        fix for "wide characters misalign the table".
         """
         scored = [
             n
@@ -170,7 +184,27 @@ class Tree:
         ]
         if not scored:
             return None
+        root = next((n for n in scored if n.parent_id is None), None)
+        if root is not None:
+            kept = [n for n in scored if n is not root and _own_tests(n) >= _own_tests(root)]
+            if kept:
+                scored = kept
         return max(scored, key=lambda n: (n.reward or 0.0, len(self.path(n.id))))
+
+    def baseline_outscored(self) -> bool:
+        """Whether the answer offered is an attempt that the untouched baseline outscored.
+
+        This only happens through the rule in `best_by_reward`; it is worth a warning.
+        """
+        best, root = self.best(), self.root
+        return (
+            best is not None
+            and root is not None
+            and best.parent_id is not None
+            and best.reward is not None
+            and root.reward is not None
+            and root.reward > best.reward
+        )
 
     def backup(self, node_id: str, value: float) -> list[Node]:
         """Propagate `value` from `node_id` to the root; returns the updated nodes."""

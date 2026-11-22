@@ -372,6 +372,7 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
             "fails until the task is done."
         )
     _print_selection(tree)
+    _warn_if_baseline_outscored(tree)
     best = tree.best()
     if best is None or best.parent_id is None:
         console.print("No attempt beat the baseline. Inspect with: [bold]agent-mcts show[/]")
@@ -380,6 +381,20 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
         summary = best.summary.splitlines()[0][:80] if best.summary else ""
         console.print(f"Best: [bold]{best.id}[/] reward={reward:.2f} {summary}")
         console.print("Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]")
+
+
+def _warn_if_baseline_outscored(tree: Tree) -> None:
+    root, best = tree.root, tree.best()
+    if not tree.baseline_outscored() or root is None or best is None:
+        return
+    generated = tree.meta.config.get("value", {}).get("generate_tests")
+    scorer = "generated tests" if generated else "judge"
+    console.print(
+        f"[yellow]warning:[/] the untouched repository scored higher ({root.reward:.2f}) than "
+        f"every attempt, but no attempt did worse on your tests: the {scorer} put it ahead. "
+        f"The {scorer} may share the mistake the task is about, so the best attempt, "
+        f"{best.id}, is offered instead. Check it with [bold]agent-mcts show {best.id}[/]."
+    )
 
 
 def _print_selection(tree: Tree, *, full: bool = False) -> None:
@@ -566,6 +581,7 @@ def show(
         console.print(f"task: {tree.meta.task}  ·  run {tree.meta.run_id}")
         console.print(tui.render_tree(tree))
         _print_selection(tree, full=True)
+        _warn_if_baseline_outscored(tree)
         return
     found = tree.nodes.get(node)
     if found is None:

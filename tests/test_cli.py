@@ -355,6 +355,9 @@ class FakeTestWritingAdapter(FakeAdapter):
 
     writer_calls = 0
     writer_files: ClassVar[list[list[str]]] = []
+    suite = (
+        "from pathlib import Path\n\ndef test_attempt():\n    assert Path('attempt.txt').exists()\n"
+    )
 
     async def run_episode(
         self, prompt: str, workdir: Path, *, resume_session: str | None = None
@@ -363,11 +366,7 @@ class FakeTestWritingAdapter(FakeAdapter):
             return await super().run_episode(prompt, workdir, resume_session=resume_session)
         FakeTestWritingAdapter.writer_calls += 1
         FakeTestWritingAdapter.writer_files.append(sorted(p.name for p in workdir.iterdir()))
-        suite = (
-            "from pathlib import Path\n\n"
-            "def test_attempt():\n"
-            "    assert Path('attempt.txt').exists()\n"
-        )
+        suite = self.suite
         return EpisodeResult(
             session_id=f"w{FakeTestWritingAdapter.writer_calls}",
             summary=f"<TestFile>tests/test_a.py</TestFile>\n```python\n{suite}```\n",
@@ -416,6 +415,44 @@ def test_run_with_generated_tests(test_writing_repo: Path) -> None:
         check=True,
     ).stdout.split()
     assert not any("generated" in f for f in files)
+
+
+class FakeBugSharingWriter(FakeTestWritingAdapter):
+    """Writes tests that the untouched repository passes and every attempt fails, the way
+    tests that measure alignment in characters favour the unfixed table code."""
+
+    suite = (
+        "from pathlib import Path\n\n"
+        "def test_unchanged():\n"
+        "    assert not Path('attempt.txt').exists()\n\n"
+        "def test_impossible():\n"
+        "    assert False\n"
+    )
+
+
+def test_generated_tests_that_prefer_the_untouched_code_are_overruled(
+    test_writing_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeBugSharingWriter)
+    # The project's own tests pass before and after every attempt.
+    result = runner.invoke(
+        cli.app, ["run", "fix the widget", "-y", "--value", "true", "-n", "2", "--generate-tests"]
+    )
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+
+    assert "Search finished: 2 episodes" in output
+    # n0 scores 0.75 (tests 1.0, half the generated tests); attempts 0.5.
+    assert "untouched repository scored higher (0.75)" in output
+    assert "the generated tests put it ahead" in output
+    assert "Best: n1" in output  # both attempts score 0.5; the first wins the tie
+    assert "warning" in runner.invoke(cli.app, ["show"]).output
+    # `apply` offers the attempt, not "nothing to apply".
+    subprocess.run(["git", "add", "-A"], cwd=test_writing_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "config"], cwd=test_writing_repo, check=True)
+    staged = runner.invoke(cli.app, ["apply"])
+    assert staged.exit_code == 0, staged.output
+    assert "Staged n1" in " ".join(staged.output.split())
 
 
 def _latest_run(repo: Path) -> str:

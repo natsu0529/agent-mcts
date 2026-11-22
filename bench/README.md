@@ -7,11 +7,14 @@ scored by tests the agent never sees.
 
 - Each task in `tasks/<name>/` has:
   - `repo/`: what the agent gets. A spec (`README.md`), a stub, and a few visible tests.
-    The visible tests (`pytest tests`) are the value command.
+    The visible tests (`pytest tests`) are the value command. A bug-fix task instead
+    ships a small working library whose visible tests already pass, plus `prompt.md`,
+    the bug report the agent is given in place of the default prompt.
   - `hidden/`: a thorough test suite that is never copied into the agent's repo. It
     scores every node of every run.
-  - `reference.py`: a solution that passes every hidden test, to show they are
-    satisfiable. It is not shown to the agent either.
+  - `reference.py` (or `reference/`, the fixed files at their repo paths): a solution
+    that passes every hidden test, to show they are satisfiable. It is not shown to the
+    agent either.
 - `run.py run` copies `repo/` into a fresh git repository **outside this checkout**,
   runs `agent-mcts run` there, then scores each node's branch on the hidden tests.
 - Arms differ only in `.agent-mcts.toml`: `tests` (value = visible tests), `judge`
@@ -35,6 +38,43 @@ Useful options: `--reps`, `--jobs`, `--nodes`, `--model`, `--tasks`, `--arms`.
 
 `results/` holds one JSON file per run and `REPORT.md`, the output of `report` for each
 measurement.
+
+### Fourth measurement: a vague bug report
+
+2026-11-22, v0.4.0, Claude Code with `haiku`, 5-episode budget, 10 runs per arm. The
+`tablefmt` task is a small table-printing library and a user's bug report: "Columns
+don't line up when cells contain Japanese", with one misaligned example. There is no
+spec. The cause is `len()` used as display width in four places (column widths,
+padding, truncation, wrapping); file names from macOS can also hold decomposed
+characters whose combining marks take no width. The visible tests pass before any fix,
+so the tests-only arm has nothing to search on and was not run. 71 hidden tests; the
+unfixed library passes 29 (41%), a fix of the reported symptom alone about 70%.
+
+| | runs | better | same | worse | first attempt | answer returned | cost per run |
+|---|---|---|---|---|---|---|---|
+| search, with judge | 10 | 3 | 7 | 0 | 91% | 93% | $1.67 |
+| search, with generated tests (v0.4.0) | 10 | 0 | 0 | 10 | 88% | 41% | $2.20 |
+| the same trees, picked with the baseline rule | 10 | 4 | 6 | 0 | 88% | 93% | |
+
+What it shows:
+
+- Generated tests failed in a systematic way. Every run, the test writer checked
+  alignment by the character position of `|` in each line, which is the same mistake as
+  the bug. Those tests pass on the unfixed code and fail on a correct fix, so the
+  untouched repository scored highest and v0.4.0 returned it in all 10 runs, although
+  the trees held attempts at 92% to 100%.
+- Among the attempts themselves the generated tests were not wrong, only blind: of 54
+  pairs that differ on the hidden tests they ranked 14 correctly, tied 40 and got none
+  backwards.
+- Since then the untouched repository is offered only when every attempt does worse on
+  the project's own tests, and a warning says when the judge or the generated tests
+  preferred it. Recomputed on the same ten trees, the answer improves on the first
+  attempt in 4 runs and is never worse (88% to 93%), level with the judge.
+- The judge did well here: it reads the diff instead of running tests, so the shared
+  misunderstanding did not affect it. It rarely improved on the first attempt, which
+  almost always scored 92% (every attempt missed only the combining marks).
+- Generated tests are only as good as the writer's understanding of the task. When the
+  task is about a misunderstanding the writer shares, they reward the bug.
 
 ### Third measurement: generated tests, 20 runs per setting
 
