@@ -6,7 +6,7 @@
 
 ![agent-mcts searching, applying the best branch, and the resulting diff](demo/demo.gif)
 
-> **Status: v0.3.** Early but real — the full loop (search → live tree → apply) works today with Claude Code. A Codex CLI adapter ships too, but so far it has only been tested against a fake `codex` binary. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
+> **Status: v0.4.** Early but real — the full loop (search → live tree → apply) works today with Claude Code. A Codex CLI adapter ships too, but so far it has only been tested against a fake `codex` binary. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
 ## Does it help?
 
@@ -102,7 +102,7 @@ agent-mcts apply n2    # ...or pick a different branch
 |---|---|---|---|
 | Claude Code | `claude -p` | native (`--fork-session`) | ✅ v0.1, verified |
 | Codex CLI | `codex exec --json` | context injection | v0.2, tested only against a fake `codex` binary |
-| Kimi CLI | `kimi -p` | context injection | planned (v0.4) |
+| Kimi CLI | `kimi -p` | context injection | planned (v0.5) |
 | Gemini CLI, OpenCode, ... | | | [adapter PRs welcome!](#contributing) |
 
 ## Configuration
@@ -135,8 +135,8 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
 - [x] **v0.2** — Codex CLI adapter, episode-count budget for agents that report no dollar cost, recoverable timed-out and interrupted episodes
 - [x] **v0.3** — LLM-as-judge value fn, final head-to-head selection, sibling ranking, `resume`, parallel expansion, selection policy knobs
-- [ ] **next** — generated-tests value fn (`--generate-tests`, on `main`, not yet released)
-- [ ] **v0.4** — Kimi CLI adapter, in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
+- [x] **v0.4** — generated-tests value fn (`--generate-tests`), hidden-test benchmark in `bench/`
+- [ ] **v0.5** — Kimi CLI adapter, in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
 ## Contributing
 
