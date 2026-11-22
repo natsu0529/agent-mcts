@@ -89,6 +89,12 @@ class FixedTests:
         return Evaluation(score=self.score, detail=self.detail)
 
 
+@pytest.fixture(autouse=True)
+def _write_bytecode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the suites the way CI does: pytest leaves __pycache__ next to them."""
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+
+
 @pytest.fixture
 def calc_repo(repo: Path) -> tuple[Path, str]:
     """The base commit: a stub to implement and one visible test."""
@@ -207,11 +213,12 @@ def test_attempts_are_scored_on_the_generated_suites(
     assert second.cost_usd == 0.0  # the suites were already written
     assert len(writer.calls) == 2
 
-    # Nothing is left behind in the attempt.
+    # Nothing is left behind in the attempt, bytecode included.
     for work in (right, wrong):
         assert sorted(p.name for p in (work / "tests").iterdir() if p.suffix == ".py") == [
             "conftest.py"
         ]
+        assert not [p for p in work.rglob("*.pyc") if "generated" in p.name]
 
 
 def test_a_suite_directory_the_attempt_lacks_is_removed_again(
@@ -227,7 +234,12 @@ def test_a_suite_directory_the_attempt_lacks_is_removed_again(
     evaluation = asyncio.run(fn.evaluate(work))
 
     assert evaluation.generated_score is not None
-    assert sorted(p.name for p in (work / "checks").iterdir()) == ["conftest.py"]
+    # checks/conftest.py is the attempt's own, so its bytecode may stay.
+    assert sorted(p.name for p in (work / "checks").iterdir() if p.suffix == ".py") == [
+        "conftest.py"
+    ]
+    assert not (work / "checks" / "deep").exists()
+    assert not [p for p in work.rglob("*.pyc") if "generated" in p.name]
 
 
 def test_suites_are_stored_and_reused_by_a_resumed_search(

@@ -20,6 +20,7 @@ import asyncio
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -257,6 +258,8 @@ class GeneratedTestsValueFunction:
         while not parent.exists():
             made.append(parent)
             parent = parent.parent
+        pycache = target.parent / "__pycache__"
+        had_pycache = pycache.exists()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(suite.content, encoding="utf-8")
@@ -267,9 +270,16 @@ class GeneratedTestsValueFunction:
         finally:
             # The worktree is snapshotted again if the search is interrupted; the
             # generated tests must never end up on a node's branch.
+            # Running the file leaves bytecode next to it unless PYTHONDONTWRITEBYTECODE
+            # is set; a directory this created holds nothing else.
             target.unlink(missing_ok=True)
-            for directory in made:
-                directory.rmdir()
+            if made:
+                shutil.rmtree(made[-1], ignore_errors=True)
+            else:
+                for compiled in pycache.glob(f"{target.stem}.*.pyc"):
+                    compiled.unlink(missing_ok=True)
+                if not had_pycache and pycache.is_dir() and not any(pycache.iterdir()):
+                    pycache.rmdir()
 
     async def evaluate(self, workdir: Path) -> Evaluation:
         tested = await self.tests.evaluate(workdir)
