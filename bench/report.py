@@ -20,7 +20,8 @@ def attempts(run: dict) -> list[dict]:
 
 
 def main(tasks: list[str] | None = None) -> None:
-    runs = [json.loads(p.read_text()) for p in sorted(RESULTS.glob("*.json"))]
+    runs = [json.loads(p.read_text()) for p in RESULTS.glob("*.json")]
+    runs.sort(key=lambda r: (r["task"], r["arm"], r["rep"]))
     if tasks:
         runs = [r for r in runs if r["task"] in tasks]
     if not runs:

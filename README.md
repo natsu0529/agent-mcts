@@ -10,21 +10,22 @@
 
 ## Does it help?
 
-Not yet, on the tasks measured so far ([bench/](bench/README.md), v0.3.0, Claude Code with `haiku`, 5-episode budget). Each answer is scored on hidden tests the agent never sees, and compared with the first attempt of the same run, which is what a single agent run would have returned. Two harder tasks (npm semver ranges, ISO 8601 durations), 10 runs per setting:
+With generated tests, yes, on the two tasks measured so far ([bench/](bench/README.md), Claude Code with `haiku`, 5-episode budget). Each answer is scored on hidden tests the agent never sees, and compared with the first attempt of the same run, which is what a single agent run would have returned. Two tasks (npm semver ranges, ISO 8601 durations), 20 runs per setting:
 
-| | answer better than the first attempt | same | worse | mean change | wall time |
-|---|---:|---:|---:|---:|---:|
-| agent-mcts, tests only | 0 | 9 | 1 | −2.2 pt | ~5 min |
-| agent-mcts, with `--judge` | 4 | 4 | 2 | −0.1 pt | ~23 min |
+| | answer better than the first attempt | same | worse | mean change | worst answer | wall time | cost per run |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| agent-mcts, tests only | 1 | 18 | 1 | −0.6 pt | 39% | ~5 min | $0.43 |
+| agent-mcts, with `--judge` | 11 | 5 | 4 | +5.4 pt | 68% | ~21 min | $1.81 |
+| agent-mcts, with `--generate-tests` | **16** | 2 | **2** | +4.8 pt | **81%** | ~19 min | $2.44 |
 
 What the per-run numbers show:
 
-- **The judge rescues some failures that tests miss, and loses some good answers.** First attempts that passed the visible tests but scored 73% and 85% on the hidden ones became 86% and 90%. In another run the judge replaced a 91% first attempt with a 68% one it scored higher.
-- **The judge's ranking is the limit.** Between two attempts that both pass the visible tests, it picks the better one 38 times in 62.
-- **Tests-only search is close to a single run.** It stops at the first attempt that passes the visible tests, which was the first attempt in 9 of 10 runs.
-- **The judge costs 5× the episodes and about 5× the wall time.**
+- **Generated tests beat a single run.** Before the search, an agent writes tests from the task and the code as it stands; every attempt is then scored on them. The answer improved in 16 of 20 runs and got worse in 2, by 1 and 4 points. Mean share of hidden tests passed: 88% for the first attempt, 93% for the answer returned.
+- **The gain mostly comes from revisions.** A failing generated test tells the next attempt what to fix: 32 of 40 revisions raised the hidden score, against 13 of 40 with the judge. In 13 of 20 runs the answer beat all three first attempts.
+- **The judge reads diffs, and that is not enough.** Its mean gain comes from rescuing two broken first attempts (19% and 37%). Over the other 18 runs it averaged +0.0 pt, and in one it replaced a 91% first attempt with a 68% one.
+- **Tests-only search is close to a single run.** It stops at the first attempt that passes the visible tests.
 
-An earlier, smaller measurement on three easier tasks looked better (99% with the judge against 90% for a single attempt), but there every first attempt in the judge runs already scored 98% or more, so it never tested this case. Better judging is the next thing to work on ([full report](bench/results/REPORT.md)).
+Caveats: two tasks, both with a precise written spec, which is where writing tests from the task works best; one model; 20 runs per setting. Details in the [full report](bench/results/REPORT.md).
 
 ## Why
 
@@ -91,7 +92,7 @@ agent-mcts apply n2    # ...or pick a different branch
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
-- **Value function = your tests.** Exit 0 scores 1.0; a failing run earns partial credit by pass ratio (read from pytest, jest, cargo test, go test and JUnit-style summaries), and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--judge` to have an LLM score each attempt's diff as well — see [LLM judge](docs/configuration.md#llm-judge).
+- **Value function = your tests.** Exit 0 scores 1.0; a failing run earns partial credit by pass ratio (read from pytest, jest, cargo test, go test and JUnit-style summaries), and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. Add `--generate-tests` to have an agent write extra tests from the task before the search and score every attempt on them too ([generated tests](docs/configuration.md#generated-tests)), or `--judge` to have an LLM score each attempt's diff ([LLM judge](docs/configuration.md#llm-judge)).
 - **Every node is a git branch** (`agent-mcts/<run>/<node>`), so `apply` is an ordinary squash merge and everything is auditable after the fact. Worktrees are disposable; branches are the record.
 - **Every state change is journaled** (append-only jsonl per run), so an interrupted search is still a valid, inspectable tree.
 
@@ -113,7 +114,7 @@ agent = "claude"                  # or "codex"
 
 [value]
 command = "pytest tests/ -x -q"   # exit code + pass ratio → score in [0, 1]
-judge = true                      # also score each attempt with an LLM judge
+generate_tests = true             # also score on tests an agent writes from the task
 
 [search]
 max_nodes = 20                    # episode budget
@@ -121,11 +122,11 @@ max_cost_usd = 10.0
 parallelism = 3                   # episodes in flight at once (`-j`)
 ```
 
-CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `-j/--parallel`) override the file.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--generate-tests`, `--judge`, `-j/--parallel`) override the file.
 
 > **Python projects managed with uv:** the value command runs inside fresh worktrees, which don't inherit your virtualenv — use `command = "uv run pytest -q"` (or pass `--value "uv run pytest -q"`) so each worktree resolves its own environment.
 
-Every option, the [LLM judge](docs/configuration.md#llm-judge), [parallel runs](docs/configuration.md#running-in-parallel), [resuming](docs/configuration.md#resuming-a-run) and how [failures, cost and timeouts](docs/configuration.md#failures-cost-and-timeouts) are handled: [docs/configuration.md](docs/configuration.md).
+Every option, [generated tests](docs/configuration.md#generated-tests), the [LLM judge](docs/configuration.md#llm-judge), [parallel runs](docs/configuration.md#running-in-parallel), [resuming](docs/configuration.md#resuming-a-run) and how [failures, cost and timeouts](docs/configuration.md#failures-cost-and-timeouts) are handled: [docs/configuration.md](docs/configuration.md).
 
 Search hyperparameters are first-class: this is built by an MCTS researcher and meant to double as a research harness for test-time search over real software tasks.
 
@@ -134,6 +135,7 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
 - [x] **v0.2** — Codex CLI adapter, episode-count budget for agents that report no dollar cost, recoverable timed-out and interrupted episodes
 - [x] **v0.3** — LLM-as-judge value fn, final head-to-head selection, sibling ranking, `resume`, parallel expansion, selection policy knobs
+- [ ] **next** — generated-tests value fn (`--generate-tests`, on `main`, not yet released)
 - [ ] **v0.4** — Kimi CLI adapter, in-agent activation (`/tree` inside Claude Code via MCP), search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
 ## Contributing

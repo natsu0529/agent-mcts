@@ -14,8 +14,8 @@ scored by tests the agent never sees.
     satisfiable. It is not shown to the agent either.
 - `run.py run` copies `repo/` into a fresh git repository **outside this checkout**,
   runs `agent-mcts run` there, then scores each node's branch on the hidden tests.
-- Arms differ only in `.agent-mcts.toml`: `tests` (value = visible tests) and `judge`
-  (`judge = true`).
+- Arms differ only in `.agent-mcts.toml`: `tests` (value = visible tests), `judge`
+  (`judge = true`) and `generated` (`generate_tests = true`).
 - The first attempt of any run (`n1`) is what a single agent run would have produced,
   so it serves as the no-search baseline.
 
@@ -23,7 +23,7 @@ scored by tests the agent never sees.
 
 ```bash
 uv run python bench/run.py validate                       # references pass, stubs fail
-uv run python bench/run.py run --work /some/scratch/dir   # every task x 2 arms x 2 repeats
+uv run python bench/run.py run --work /some/scratch/dir   # every task x 3 arms x 2 repeats
 uv run python bench/run.py report [--tasks semver duration]
 ```
 
@@ -35,6 +35,52 @@ Useful options: `--reps`, `--jobs`, `--nodes`, `--model`, `--tasks`, `--arms`.
 
 `results/` holds one JSON file per run and `REPORT.md`, the output of `report` for each
 measurement.
+
+### Third measurement: generated tests, 20 runs per setting
+
+2026-11-22, v0.3.0 plus `generate_tests` (not yet released), Claude Code with `haiku`
+for every role, 5-episode budget. The same two tasks as the second measurement
+(below), 20 runs per arm. Runs 1-5 of `tests` and `judge` are the second measurement's.
+
+The answer each run returned, against that run's own first attempt:
+
+| | runs | better | same | worse | mean change | worst answer | wall time | cost per run |
+|---|---|---|---|---|---|---|---|---|
+| search, tests only | 20 | 1 | 18 | 1 | -0.6 pt | 39% | ~5 min | $0.43 |
+| search, with judge | 20 | 11 | 5 | 4 | +5.4 pt | 68% | ~21 min | $1.81 |
+| search, with generated tests | 20 | 16 | 2 | 2 | +4.8 pt | 81% | ~19 min | $2.44 |
+
+Share of hidden tests passed, mean over runs:
+
+| | first attempt | answer returned | best attempt in the tree |
+|---|---|---|---|
+| search, tests only | 84% | 83% | 84% |
+| search, with judge | 83% | 88% | 91% |
+| search, with generated tests | 88% | 93% | 94% |
+
+What it shows:
+
+- With generated tests the search beat a single attempt: better in 16 runs, worse in 2.
+  If search made no difference, a split this lopsided would happen about once in 800
+  (two-sided sign test, p = 0.001). The gain held on both tasks: `semver` 8 better,
+  1 worse, +6.1 pt; `duration` 8 better, 1 worse, +3.6 pt. The two losses were small
+  (-4 pt and -1 pt).
+- Most of the gain comes from revisions, not from picking. A failing generated test is
+  something concrete to fix: 32 of 40 revisions raised the hidden score (the judge arm:
+  13 of 40), and in 13 of 20 runs the answer returned beat all three first attempts
+  (the judge arm: 3 of 20).
+- The reward ranks attempts better. Among attempts in the same run whose hidden scores
+  differ, the higher reward went to the better one in 155 of 189 pairs, with 6 ties
+  (judge: 119 of 170, with 11 ties). The answer returned was the best attempt in the
+  tree in 14 of 20 runs (judge: 9).
+- The judge arm's mean gain is about as large, but it comes from two runs whose first
+  attempt was broken (19% and 37%, both rescued to 81% and 84%). Over the other 18 runs
+  its mean change is +0.0 pt (9 better, 4 worse), and it still returned a 68% answer
+  in place of a 91% first attempt.
+- Writing the three suites cost $0.36-0.60 per run and took a few minutes. Revisions
+  also do more work, so a run costs about a third more than with the judge.
+- The limits: two tasks, both with a precise written spec, which is the easiest case for
+  writing tests from the spec; one model; 20 runs per arm.
 
 ### Second measurement: harder tasks, five repeats
 
