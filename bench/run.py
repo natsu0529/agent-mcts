@@ -1,7 +1,8 @@
 """Benchmark: does the search reach better answers than one attempt?
 
-Each task is a small repo with a spec, a stub and a few visible tests. A separate set of
-hidden tests, never shown to the agent, scores every node of every run.
+Each task is a small repo with a spec, a stub and a few visible tests, or a small library
+with a bug report (prompt.md). A separate set of hidden tests, never shown to the agent,
+scores every node of every run.
 
     python bench/run.py validate                 # hidden tests pass on the references
     python bench/run.py run --work DIR [--reps 2] [--jobs 3] [--tasks ...] [--arms ...]
@@ -64,6 +65,12 @@ def _time_limit():
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
 """
+
+
+def task_prompt(task: str) -> str:
+    """The task's own prompt.md (for tasks that are not "implement the spec"), else PROMPT."""
+    path = TASKS / task / "prompt.md"
+    return path.read_text(encoding="utf-8").strip() if path.exists() else PROMPT
 
 
 def task_names() -> list[str]:
@@ -130,13 +137,18 @@ def hidden_total(task: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "s"
         shutil.copytree(TASKS / task / "repo", src)
-        ref = TASKS / task / "reference.py"
-        module = next(p for p in (TASKS / task / "repo").glob("*.py"))
-        text = ref.read_text().replace(
-            'Path(__file__).resolve().parent / "hidden"',
-            'Path(__file__).resolve().parent / "_hidden"',
-        )
-        (src / module.name).write_text(text)
+        ref_dir = TASKS / task / "reference"
+        if ref_dir.is_dir():
+            # A multi-file task: reference/ holds the fixed files at their repo paths.
+            shutil.copytree(ref_dir, src, dirs_exist_ok=True)
+        else:
+            ref = TASKS / task / "reference.py"
+            module = next(p for p in (TASKS / task / "repo").glob("*.py"))
+            text = ref.read_text().replace(
+                'Path(__file__).resolve().parent / "hidden"',
+                'Path(__file__).resolve().parent / "_hidden"',
+            )
+            (src / module.name).write_text(text)
         passed, total = hidden_score(task, src)
         if total is None or passed != total:
             raise SystemExit(f"{task}: reference passes {passed}/{total} hidden tests")
@@ -200,7 +212,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
     started = time.time()
     with (work_root / f"{cell}.log").open("w") as log:
         proc = subprocess.run(
-            [AGENT_MCTS, "run", PROMPT, "-y"],
+            [AGENT_MCTS, "run", task_prompt(task), "-y"],
             cwd=repo,
             stdout=log,
             stderr=subprocess.STDOUT,

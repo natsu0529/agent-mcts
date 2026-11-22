@@ -65,10 +65,13 @@ The judge only reads diffs, and on the [benchmark](../bench/README.md) that was 
 - Some generated tests are wrong. On the benchmark nearly all of those failed on every attempt alike, so they barely changed the ranking: the mean over three suites picked the better attempt of a pair 58 times in 62.
 - The suites are stored with the run (`.agent-mcts/runs/<run>/generated/`), and `resume` scores new attempts on the same files. Writing them is charged to the baseline evaluation, so `show n0` shows its cost; it counts toward `max_cost_usd` but not toward `max_nodes`.
 - If no suite could be written, every attempt scores 0 on that half and the reason appears in its detail, so the tests alone decide.
+- Generated tests can share the mistake the task is about. On a bug report about misaligned Japanese text, the writer measured alignment in characters, as the buggy code did, so the unfixed code passed its tests and every fix failed them. The untouched repository is therefore offered as the answer only when every attempt does worse on your own tests; otherwise the best attempt is, and `run` and `show` print a warning when the generated tests (or the judge) scored the untouched repository higher.
 
 It is an alternative to the judge, not an addition: turn on one of them. `agent-mcts show <node>` prints `tests=` and `generated=`.
 
-On the benchmark (two tasks, 20 runs, `haiku`), the answer a run returned beat that run's first attempt in 16 runs and fell behind it in 2, +4.8 points of hidden tests on average; with the judge it was 11 and 4. Writing three suites cost about $0.43 per run. See [the results](../bench/README.md#third-measurement-generated-tests-20-runs-per-setting).
+On the benchmark (two tasks with written specs, 20 runs, `haiku`), the answer a run returned beat that run's first attempt in 16 runs and fell behind it in 2, +4.8 points of hidden tests on average; with the judge it was 11 and 4. Writing three suites cost about $0.43 per run. See [the results](../bench/README.md#third-measurement-generated-tests-20-runs-per-setting).
+
+On a vague bug report the judge is the safer choice: there the generated tests could not tell attempts apart, and the answer was as good as the judge's only thanks to the rule above ([results](../bench/README.md#fourth-measurement-a-vague-bug-report)).
 
 ## Running in parallel
 
