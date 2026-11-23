@@ -34,6 +34,12 @@ class SearchConfig(BaseModel):
     max_depth: int = 3  # root is depth 0
     success_threshold: float = 0.999  # stop as soon as a node scores this high
 
+    # End the search after the first attempt when it passes the project's own tests and
+    # its judge (or generated-tests) score is at least this. The first attempt is what a
+    # single agent run would return, so stopping there costs no more than one run; the
+    # search is spent only where that attempt looks weak. None disables the rule.
+    first_attempt_stop: float | None = Field(default=None, ge=0, le=1)
+
     # What a node is worth during selection. "mean" is classic UCT (Q = W/N). Every node
     # here is a complete, directly scored solution and the goal is the single best one,
     # so "max" (best reward seen in the subtree) or "mix" can fit better than a mean
@@ -156,6 +162,32 @@ class SearchEngine:
             for n in self.tree.nodes.values()
         )
 
+    @property
+    def first_attempt(self) -> Node | None:
+        """The first attempt launched under the root, whatever became of it."""
+        root = self.tree.root
+        if root is None:
+            return None
+        attempts = self.tree.children(root.id)
+        return min(attempts, key=lambda n: n.created_at) if attempts else None
+
+    @property
+    def stopped_after_first(self) -> bool:
+        """Whether the first attempt is good enough to end the search (`first_attempt_stop`).
+
+        Needs a score beyond the project's tests: with tests alone, an attempt that passes
+        them already meets the success threshold and ends the search anyway.
+        """
+        threshold = self.config.first_attempt_stop
+        first = self.first_attempt
+        if threshold is None or first is None or first.status is not NodeStatus.EVALUATED:
+            return False
+        own_tests = first.test_score if first.test_score is not None else (first.reward or 0.0)
+        if own_tests < self.config.success_threshold:
+            return False
+        extra = first.judge_score if first.judge_score is not None else first.generated_score
+        return extra is not None and extra >= threshold
+
     def recover_interrupted(self) -> list[Node]:
         """Close out nodes a killed process left RUNNING; returns the nodes it changed.
 
@@ -228,7 +260,7 @@ class SearchEngine:
             self.on_change()
 
     def _may_launch(self, in_flight: int) -> bool:
-        if not self._within_budget() or self.solved:
+        if not self._within_budget() or self.solved or self.stopped_after_first:
             return False
         if in_flight == 0 or not self.adapter.reports_cost:
             return True

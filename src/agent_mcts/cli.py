@@ -134,6 +134,17 @@ def run(
             "each attempt on them as well as on the value command.",
         ),
     ] = None,
+    first_attempt_stop: Annotated[
+        float | None,
+        typer.Option(
+            "--first-attempt-stop",
+            min=0.0,
+            max=1.0,
+            help="End the search after the first attempt if it passes your tests and the "
+            "judge (or generated tests) scores it at least this. Needs --judge or "
+            "--generate-tests.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Search for a solution to TASK with your coding agent."""
@@ -167,6 +178,16 @@ def run(
         cfg.value.generate_tests = generate_tests
     if cfg.value.judge and cfg.value.generate_tests:
         _fail("--judge and --generate-tests are alternatives; turn on one of them")
+    if first_attempt_stop is not None:
+        cfg.search.first_attempt_stop = first_attempt_stop
+    if cfg.search.first_attempt_stop is not None and not (
+        cfg.value.judge or cfg.value.generate_tests
+    ):
+        _fail(
+            "--first-attempt-stop compares the judge or generated-tests score with the "
+            "threshold; turn on --judge or --generate-tests. With tests alone the search "
+            "already stops at the first attempt that passes them."
+        )
     if cfg.value.generate_tests and cfg.value.generate_command is None:
         cfg.value.generate_command = default_command(value_command)
         if cfg.value.generate_command is None:
@@ -273,6 +294,11 @@ def _print_plan(
         f"{' + sibling ranking' if backends.judge and cfg.value.relative else ''}[/] · "
         f"Budget: {budget} · Timeout: {timeout_s:.0f}s/episode"
         + (f" · Parallel: {cfg.search.parallelism}" if cfg.search.parallelism > 1 else "")
+        + (
+            f" · Stop after the first attempt at {cfg.search.first_attempt_stop:.2f}"
+            if cfg.search.first_attempt_stop is not None
+            else ""
+        )
     )
 
 
@@ -371,6 +397,7 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
             "[bold]--generate-tests[/] or [bold]--judge[/], or use a value command that "
             "fails until the task is done."
         )
+    _print_first_attempt_stop(engine)
     _print_selection(tree)
     _warn_if_baseline_outscored(tree)
     best = tree.best()
@@ -381,6 +408,21 @@ def _search_and_report(engine: SearchEngine, *, cfg: project.ProjectConfig, judg
         summary = best.summary.splitlines()[0][:80] if best.summary else ""
         console.print(f"Best: [bold]{best.id}[/] reward={reward:.2f} {summary}")
         console.print("Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]")
+
+
+def _print_first_attempt_stop(engine: SearchEngine) -> None:
+    first = engine.first_attempt
+    if not engine.stopped_after_first or first is None:
+        return
+    if first.judge_score is not None:
+        scorer, score = "the judge", first.judge_score
+    else:
+        scorer, score = "the generated tests", first.generated_score or 0.0
+    console.print(
+        f"Stopped after the first attempt: {first.id} passes your tests and {scorer} "
+        f"scored it {score:.2f} (threshold {engine.config.first_attempt_stop:.2f}). "
+        "To search further anyway: [bold]agent-mcts resume[/]"
+    )
 
 
 def _warn_if_baseline_outscored(tree: Tree) -> None:
@@ -494,6 +536,10 @@ def resume(
             "Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]"
         )
         return
+    if engine.stopped_after_first:
+        # Resuming a run this rule ended is asking for the search it skipped.
+        cfg.search.first_attempt_stop = None
+        console.print("This run stopped after its first attempt; continuing it without that rule.")
     if engine.episodes >= cfg.search.max_nodes:
         _fail(
             f"the episode budget is used up ({engine.episodes}/{cfg.search.max_nodes}). "

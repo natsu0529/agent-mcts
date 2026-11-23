@@ -59,6 +59,10 @@ with spare width. Three settings change that, all off by default.
   as SWE-Search does, instead of committing level by level. The paper's depth terms
   (`depth_bonus`, `depth_penalty`) only matter here: when descending, the candidates at
   each step are siblings, which share a depth, so the terms cancel.
+- **`first_attempt_stop`** ends the search after the first attempt when it passes the
+  project's tests and its judge or generated-tests score clears the threshold: a
+  checkpoint in the spirit of DS-MCTS ("Learning to Stop", AAAI 2021), with a fixed
+  threshold in place of a learned predictor until there are runs to learn from.
 - **`give_up_after`** stops revising a line of attempts once its last N nodes all scored
   below `low_reward`.
 

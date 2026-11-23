@@ -42,7 +42,13 @@ ARMS = {
     "tests": "judge = false\n",
     "judge": "judge = true\njudge_timeout_s = 900\n",
     "generated": "generate_tests = true\n",
+    "judge-stop": "judge = true\njudge_timeout_s = 900\n",
 }
+# [search] lines per arm. judge-stop ends the search after a first attempt that passes
+# the visible tests with a judge score of 0.8 or more (see docs/configuration.md;
+# on the saved judge runs the visible tests alone decided every stop).
+SEARCH_EXTRA = {"judge-stop": "first_attempt_stop = 0.8\n"}
+DEFAULT_ARMS = ["tests", "judge", "generated"]
 
 _HIDDEN_CONFTEST = """
 import signal, sys
@@ -195,6 +201,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
         f'model = "{model}"\n\n[value]\n'
         f'command = "{PYTHON} -m pytest -q -p no:cacheprovider tests"\n'
         f"{ARMS[arm]}\n[search]\nmax_nodes = {nodes}\nmax_cost_usd = 50.0\n"
+        f"{SEARCH_EXTRA.get(arm, '')}"
     )
     git(repo, "init", "-q", "-b", "main")
     git(repo, "add", "-A")
@@ -327,7 +334,7 @@ def main() -> None:
     p.add_argument("--nodes", type=int, default=5)
     p.add_argument("--model", default="haiku")
     p.add_argument("--tasks", nargs="+", default=task_names())
-    p.add_argument("--arms", nargs="+", default=list(ARMS))
+    p.add_argument("--arms", nargs="+", default=DEFAULT_ARMS, choices=list(ARMS))
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("rescore")
     p.add_argument("--work", required=True)

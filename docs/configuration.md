@@ -35,9 +35,10 @@ depth_penalty = 0.0               # with "global": - depth_penalty * sqrt(d)
 parallelism = 1                   # episodes in flight at once (`-j`); see "Running in parallel"
 give_up_after = 0                 # stop revising a line after this many low scores in a row
 low_reward = 0.25                 # what counts as a low score for give_up_after
+# first_attempt_stop = 0.8        # end after a first attempt that passes and scores this (judge / generated tests)
 ```
 
-CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `--generate-tests/--no-generate-tests`, `-j/--parallel`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`, `--judge/--no-judge`, `--generate-tests/--no-generate-tests`, `--first-attempt-stop`, `-j/--parallel`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
 
 ## LLM judge
 
@@ -72,6 +73,27 @@ It is an alternative to the judge, not an addition: turn on one of them. `agent-
 On the benchmark (two tasks with written specs, 20 runs, `haiku`), the answer a run returned beat that run's first attempt in 16 runs and fell behind it in 2, +4.8 points of hidden tests on average; with the judge it was 11 and 4. Writing three suites cost about $0.43 per run. See [the results](../bench/README.md#third-measurement-generated-tests-20-runs-per-setting).
 
 On a vague bug report the judge is the safer choice: there the generated tests could not tell attempts apart, and the answer was as good as the judge's only thanks to the rule above ([results](../bench/README.md#fourth-measurement-a-vague-bug-report)).
+
+## Stopping after the first attempt
+
+The first attempt is what a single agent run would have returned. With `--first-attempt-stop 0.8` (or `[search] first_attempt_stop = 0.8`), the search ends right there when that attempt passes the project's own tests and the judge, or the generated tests, score it 0.8 or more. The run then costs about what one agent run costs, and the search is spent where the first attempt fails the tests or the scorer rates it low. It needs `--judge` or `--generate-tests`: with tests alone, an attempt that passes them ends the search anyway.
+
+- Only the first attempt launched is checked, once. A later attempt that scores as high does not end the search.
+- `agent-mcts resume` on a run this rule ended continues it without the rule.
+
+This is experimental and off by default. Replayed on the saved trees of the [benchmark](../bench/README.md) (5 attempts per run; the search is sequential, so cutting a tree short is what a shorter search would have built):
+
+| | judge, 36 runs, 6 tasks | generated tests, 20 runs, 2 tasks |
+|---|---:|---:|
+| first attempt only | 87.9%, $0.36 | 88.2%, $0.85 |
+| full search | 91.3%, $1.82 | 93.1%, $2.44 |
+| `first_attempt_stop = 0.8` | 91.1%, $0.55 | 91.0%, $1.38 |
+
+Mean share of hidden tests passed, and cost per run.
+
+- **With the judge it keeps almost all of the gain at under a third of the cost.** 32 of 36 runs stop after the first attempt. Choosing the threshold on five tasks and testing it on the sixth, for each task in turn, gives the same 91.1% and $0.55.
+- **The judge score did not decide any of those stops; the tests did.** Every first attempt that passed the visible tests got 0.84 or more from the judge, and every one that failed got 0.61 or less, so any threshold between those gives the same result. The threshold only matters for a passing attempt the judge rates poorly, which these runs never produced. That case comes up when the tests already pass before the task is done, as in the vague bug report.
+- **With generated tests, do not use it.** Revisions kept raising first attempts that scored 0.96 or more on the generated tests, and stopping loses about 2 points.
 
 ## Running in parallel
 
