@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shlex
 import shutil
@@ -182,6 +183,13 @@ class SuiteWriter:
         return spent.model_copy(update={"suite": suite})
 
 
+def _compiled(pycache: Path, stem: str) -> list[Path]:
+    """Bytecode files for `stem` in `pycache`, if it is a real directory."""
+    if pycache.is_symlink() or not pycache.is_dir():
+        return []
+    return list(pycache.glob(f"{stem}.*.pyc"))
+
+
 class GeneratedTestsValueFunction:
     """`w_test * tests + w_generated * generated`, weights normalized to sum to 1.
 
@@ -273,41 +281,61 @@ class GeneratedTestsValueFunction:
             return self._loaded, spend
 
     async def _run_suite(self, workdir: Path, suite: GeneratedSuite) -> Evaluation:
-        target = workdir / suite.path
+        root = workdir.resolve()
+        target = root / suite.path
         # A symlinked directory in the attempt could still lead outside the worktree.
-        if not target.parent.resolve().is_relative_to(workdir.resolve()):
+        if not target.parent.resolve().is_relative_to(root):
             return Evaluation(
                 score=0.0, detail=f"{suite.path} would be written outside the attempt"
             )
-        existed = target.exists()
-        if existed:
+        # lexists: a dangling symlink in the attempt is something there too.
+        if os.path.lexists(target):
             return Evaluation(score=0.0, detail=f"{suite.path} already exists in the attempt")
         made: list[Path] = []
         parent = target.parent
-        while not parent.exists():
+        while not os.path.lexists(parent):
             made.append(parent)
             parent = parent.parent
         pycache = target.parent / "__pycache__"
-        had_pycache = pycache.exists()
+        compiled_before = set(_compiled(pycache, target.stem))
+        had_pycache = os.path.lexists(pycache)
+        created: list[Path] = []
+        written = False
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(suite.content, encoding="utf-8")
+            # One directory at a time and the file exclusively, never through a link
+            # that appeared since the checks above.
+            try:
+                for directory in reversed(made):
+                    directory.mkdir()
+                    created.append(directory)
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                fd = os.open(target, flags, 0o644)
+                written = True
+                with os.fdopen(fd, "w", encoding="utf-8") as out:
+                    out.write(suite.content)
+            except OSError as e:
+                return Evaluation(score=0.0, detail=f"{suite.path} could not be written: {e}")
             runner = CommandValueFunction(
                 self.command.format(file=shlex.quote(suite.path)), timeout_s=self.timeout_s
             )
             return await runner.evaluate(workdir)
         finally:
             # The worktree is snapshotted again if the search is interrupted; the
-            # generated tests must never end up on a node's branch.
+            # generated tests must never end up on a node's branch. Only what this
+            # created is removed, and nothing reached through a symlink.
             # Running the file leaves bytecode next to it unless PYTHONDONTWRITEBYTECODE
             # is set; a directory this created holds nothing else.
-            target.unlink(missing_ok=True)
-            if made:
-                shutil.rmtree(made[-1], ignore_errors=True)
-            else:
-                for compiled in pycache.glob(f"{target.stem}.*.pyc"):
-                    compiled.unlink(missing_ok=True)
-                if not had_pycache and pycache.is_dir() and not any(pycache.iterdir()):
+            if written:
+                target.unlink(missing_ok=True)
+            if created:
+                top = created[0]
+                if top.is_dir() and not top.is_symlink():
+                    shutil.rmtree(top, ignore_errors=True)
+            elif not pycache.is_symlink() and pycache.is_dir():
+                for compiled in _compiled(pycache, target.stem):
+                    if compiled not in compiled_before:
+                        compiled.unlink(missing_ok=True)
+                if not had_pycache and not any(pycache.iterdir()):
                     pycache.rmdir()
 
     async def evaluate(self, workdir: Path) -> Evaluation:

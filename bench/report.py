@@ -15,18 +15,58 @@ def pct(value: float | None) -> str:
     return "-" if value is None else f"{100 * value:.0f}%"
 
 
+def episodes(run: dict) -> list[dict]:
+    """Every agent attempt (not the untouched root), scored on the hidden tests or not.
+
+    Episode counts and spend come from these, so a node the hidden tests could not
+    score still counts as the episode it was and the money it cost.
+    """
+    return [n for n in run["nodes"] if n["parent"] is not None]
+
+
 def attempts(run: dict) -> list[dict]:
-    """Nodes that are agent attempts (not the untouched root) and were scored."""
-    return [n for n in run["nodes"] if n["parent"] is not None and n["hidden"] is not None]
+    """Agent attempts that were scored on the hidden tests."""
+    return [n for n in episodes(run) if n["hidden"] is not None]
+
+
+def unscored(run: dict) -> list[dict]:
+    """Attempts that finished and were evaluated but have no hidden score."""
+    return [n for n in episodes(run) if n["status"] == "evaluated" and n["hidden"] is None]
 
 
 def attempt_cost(run: dict) -> float:
     """Dollars spent on the attempts and their scoring, without writing the tests.
 
     The root's evaluation carries the test writer's spend in a `generated` run and
-    nothing in a `best-of-n` run, which reuses those tests, so it is left out of both.
+    nothing in a baseline run, which reuses those tests, so it is left out of both.
     """
-    return sum((n["cost_usd"] or 0.0) + (n["eval_cost_usd"] or 0.0) for n in attempts(run))
+    return sum((n["cost_usd"] or 0.0) + (n["eval_cost_usd"] or 0.0) for n in episodes(run))
+
+
+def current_choice(run: dict) -> str | None:
+    """The answer today's rule would return from this run's nodes.
+
+    Mirrors `Tree.best_by_reward`: the untouched root is a candidate only when every
+    attempt does worse than it on the project's own tests. Results from before that
+    rule (v0.4.0) can hold a different `chosen`.
+    """
+    scored = [n for n in run["nodes"] if n["status"] == "evaluated" and n["reward"] is not None]
+    if not scored:
+        return None
+
+    def own(n: dict) -> float:
+        return n["test_score"] if n["test_score"] is not None else n["reward"] or 0.0
+
+    root = next((n for n in scored if n["parent"] is None), None)
+    if root is not None:
+        kept = [n for n in scored if n is not root and own(n) >= own(root)]
+        if kept:
+            scored = kept
+    return max(scored, key=lambda n: (n["reward"] or 0.0, n["depth"]))["id"]
+
+
+def mean_or_none(values: list[float]) -> float | None:
+    return mean(values) if values else None
 
 
 # Two-sided 95% quantiles of Student's t, by degrees of freedom (normal beyond 30).
@@ -57,6 +97,12 @@ def unpaired_reason(search: dict, baseline: dict) -> str | None:
     for run in (search, baseline):
         if run.get("error") or run.get("exit_code") or run.get("chosen_hidden") is None:
             return f"{run['arm']} run did not finish scoring"
+        if missing := unscored(run):
+            return f"{run['arm']} run has {len(missing)} attempt(s) without a hidden score"
+        # A final head-to-head pick is stored as such; otherwise the answer must be the
+        # one today's rule returns, or the two runs were picked by different rules.
+        if run.get("selection") is None and run.get("chosen") != current_choice(run):
+            return f"{run['arm']} run picked its answer with an older rule"
     if search.get("model") != baseline.get("model"):
         return "different models"
     if search.get("max_nodes") != baseline.get("max_nodes"):
@@ -130,8 +176,8 @@ def same_budget_against(runs: list[dict], baseline: str, name: str, how: str) ->
             f"{pct(mean(s['chosen_hidden'] for s, _ in ps))} | "
             f"{pct(mean(b['chosen_hidden'] for _, b in ps))} | {interval(d)} | "
             f"{sign_test(wins, losses)} | {pct(mean(oracle))} | "
-            f"{mean(len(attempts(s)) for s, _ in ps):.1f} / "
-            f"{mean(len(attempts(b)) for _, b in ps):.1f} | "
+            f"{mean(len(episodes(s)) for s, _ in ps):.1f} / "
+            f"{mean(len(episodes(b)) for _, b in ps):.1f} | "
             f"${mean(attempt_cost(s) for s, _ in ps):.2f} / "
             f"${mean(attempt_cost(b) for _, b in ps):.2f} |"
         )
@@ -157,10 +203,11 @@ def main(tasks: list[str] | None = None) -> None:
         a = attempts(r)
         first = next((n["hidden"] for n in r["nodes"] if n["id"] == "n1"), None)
         print(
-            f"| {r['task']} | {r['arm']} | {r['rep']} | {len(a)} | {pct(first)} | "
+            f"| {r['task']} | {r['arm']} | {r['rep']} | {len(episodes(r))} | {pct(first)} | "
             f"{pct(r['chosen_hidden'])} ({r['chosen']}) | "
             f"{pct(max((n['hidden'] for n in a), default=None))} | "
-            f"{pct(mean(n['hidden'] for n in a) if a else None)} | {r['wall_s'] / 60:.1f} |"
+            f"{pct(mean_or_none([n['hidden'] for n in a]))} | "
+            f"{(r.get('wall_s') or 0) / 60:.1f} |"
         )
 
     print("\n## Per task and arm (mean over repeats)\n")
@@ -180,9 +227,9 @@ def main(tasks: list[str] | None = None) -> None:
         chosen = [r["chosen_hidden"] or 0.0 for r in rs]
         best = [max((n["hidden"] for n in attempts(r)), default=0.0) for r in rs]
         print(
-            f"| {task} | {arm} | {len(rs)} | {mean(len(attempts(r)) for r in rs):.1f} | "
-            f"{pct(mean(firsts) if firsts else None)} | {pct(mean(chosen))} | {pct(mean(best))} | "
-            f"{mean(r['wall_s'] for r in rs) / 60:.1f} |"
+            f"| {task} | {arm} | {len(rs)} | {mean(len(episodes(r)) for r in rs):.1f} | "
+            f"{pct(mean_or_none(firsts))} | {pct(mean(chosen))} | {pct(mean(best))} | "
+            f"{mean((r.get('wall_s') or 0) for r in rs) / 60:.1f} |"
         )
 
     print("\n## Within each run: the chosen answer against the first attempt\n")
@@ -200,6 +247,9 @@ def main(tasks: list[str] | None = None) -> None:
             if r["arm"] == arm and first is not None:
                 pairs.append((first, r["chosen_hidden"] or 0.0))
         d = [c - f for f, c in pairs]
+        if not pairs:
+            print(f"| {arm} | 0 | - | - | - | - | - | - |")
+            continue
         print(
             f"| {arm} | {len(pairs)} | {sum(x > 1e-9 for x in d)} | "
             f"{sum(abs(x) <= 1e-9 for x in d)} | {sum(x < -1e-9 for x in d)} | "
