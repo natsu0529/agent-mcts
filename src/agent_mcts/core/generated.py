@@ -25,7 +25,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from agent_mcts.adapters.base import AdapterError, AgentBackend, TokenUsage
 from agent_mcts.core.value import CommandValueFunction, Evaluation, ValueFunction
@@ -74,6 +74,18 @@ class GeneratedSuite(BaseModel):
 
     path: str  # relative to the repository root, POSIX separators
     content: str
+
+    @field_validator("path")
+    @classmethod
+    def _inside_the_repository(cls, path: str) -> str:
+        # Suites can come from a file (`generate_reuse`), not only from `parse_suite`,
+        # and the path is written to and deleted in every attempt's worktree.
+        posix = PurePosixPath(path)
+        if not path or "\\" in path or posix.is_absolute() or ".." in posix.parts:
+            raise ValueError(f"suite path must be relative and inside the repository: {path!r}")
+        if posix.name in ("", "."):
+            raise ValueError(f"suite path must name a file: {path!r}")
+        return path
 
 
 class WriterResult(BaseModel):
@@ -262,6 +274,11 @@ class GeneratedTestsValueFunction:
 
     async def _run_suite(self, workdir: Path, suite: GeneratedSuite) -> Evaluation:
         target = workdir / suite.path
+        # A symlinked directory in the attempt could still lead outside the worktree.
+        if not target.parent.resolve().is_relative_to(workdir.resolve()):
+            return Evaluation(
+                score=0.0, detail=f"{suite.path} would be written outside the attempt"
+            )
         existed = target.exists()
         if existed:
             return Evaluation(score=0.0, detail=f"{suite.path} already exists in the attempt")
@@ -321,6 +338,13 @@ class GeneratedTestsValueFunction:
             reasons = "; ".join(self._write_errors) or "no suite was written"
             return f"Generated tests unavailable ({reasons}); scored on tests alone."
         failures = [line for r in runs for line in _FAILED_LINE.findall(r.detail)]
+        # A suite that scored below 1 without pytest failure lines (refused before it
+        # ran, timed out, ...) says why in the first line of its detail.
+        failures += [
+            r.detail.splitlines()[0][:200]
+            for r in runs
+            if r.score < 1 and r.detail.strip() and not _FAILED_LINE.search(r.detail)
+        ]
         head = (
             f"Generated tests ({generated:.2f}, mean over {len(suites)} suites written from "
             "the task by another agent; a few of them may be wrong):"

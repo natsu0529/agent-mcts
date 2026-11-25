@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from agent_mcts.adapters.base import AdapterError, EpisodeResult, TokenUsage
 from agent_mcts.core.generated import (
+    GeneratedSuite,
     GeneratedTestsValueFunction,
     SuiteWriter,
     default_command,
@@ -263,6 +264,28 @@ def test_suites_are_stored_and_reused_by_a_resumed_search(
 
     assert resumed_writer.calls == []
     assert evaluation.generated_score == pytest.approx(0.25)  # only add(0, 0) == 0
+
+
+@pytest.mark.parametrize("path", ["../x/test_a.py", "/etc/test_a.py", "tests\\test_a.py", ""])
+def test_a_suite_path_must_stay_inside_the_repository(path: str) -> None:
+    with pytest.raises(ValidationError, match="suite path"):
+        GeneratedSuite(path=path, content="x = 1\n")
+
+
+def test_a_suite_is_not_written_through_a_symlink_out_of_the_attempt(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (work / "checks").symlink_to(outside)
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 0.0
+    assert "outside the attempt" in evaluation.detail
+    assert list(outside.iterdir()) == []
 
 
 def test_a_new_run_can_reuse_the_suites_an_earlier_run_wrote(
