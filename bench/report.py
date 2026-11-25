@@ -69,6 +69,11 @@ def mean_or_none(values: list[float]) -> float | None:
     return mean(values) if values else None
 
 
+def fully_scored(run: dict) -> bool:
+    """The run's answer and every attempt it evaluated have a hidden score."""
+    return run.get("chosen_hidden") is not None and not unscored(run)
+
+
 def counted(scored: int, total: int) -> str:
     """A run count, saying how many were left out for lack of a hidden score."""
     return str(total) if scored == total else f"{scored} of {total}"
@@ -223,17 +228,18 @@ def main(tasks: list[str] | None = None) -> None:
         groups[(r["task"], r["arm"])].append(r)
         groups[("ALL", r["arm"])].append(r)
     for (task, arm), rs in sorted(groups.items(), key=lambda kv: (kv[0][0] == "ALL", kv[0])):
+        # A run without a hidden score for its answer or for any attempt is not a 0%:
+        # the score columns all leave it out, so each row averages the same runs, and
+        # the runs column says how many were scored. Episodes and time count every run.
+        scored = [r for r in rs if fully_scored(r)]
         firsts = [
             n["hidden"]
-            for r in rs
+            for r in scored
             for n in r["nodes"]
             if n["id"] == "n1" and n["hidden"] is not None
         ]
-        # A run without a hidden score for its answer is not a 0%: it is left out of
-        # the means, and the runs column says how many of them were scored.
-        scored = [r for r in rs if r["chosen_hidden"] is not None]
         chosen = [r["chosen_hidden"] for r in scored]
-        best = [max(n["hidden"] for n in attempts(r)) for r in rs if attempts(r)]
+        best = [max(n["hidden"] for n in attempts(r)) for r in scored if attempts(r)]
         print(
             f"| {task} | {arm} | {counted(len(scored), len(rs))} | "
             f"{mean(len(episodes(r)) for r in rs):.1f} | "
@@ -255,7 +261,7 @@ def main(tasks: list[str] | None = None) -> None:
         arm_runs = [r for r in runs if r["arm"] == arm]
         for r in arm_runs:
             first = next((n["hidden"] for n in r["nodes"] if n["id"] == "n1"), None)
-            if first is not None and r["chosen_hidden"] is not None:
+            if first is not None and fully_scored(r):
                 pairs.append((first, r["chosen_hidden"]))
         d = [c - f for f, c in pairs]
         if not pairs:

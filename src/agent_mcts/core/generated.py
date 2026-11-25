@@ -17,6 +17,7 @@ scores new nodes on exactly the tests the old ones saw.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -183,11 +184,146 @@ class SuiteWriter:
         return spent.model_copy(update={"suite": suite})
 
 
-def _compiled(pycache: Path, stem: str) -> list[Path]:
-    """Bytecode files for `stem` in `pycache`, if it is a real directory."""
-    if pycache.is_symlink() or not pycache.is_dir():
-        return []
-    return list(pycache.glob(f"{stem}.*.pyc"))
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)  # not on Windows
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+# Directory descriptors for every step of creating and removing a suite (POSIX).
+DESCRIPTOR_CLEANUP = (
+    {os.open, os.mkdir, os.stat, os.unlink, os.rmdir} <= os.supports_dir_fd
+    and os.listdir in os.supports_fd
+    and shutil.rmtree.avoids_symlink_attacks
+)
+
+
+def _ident(st: os.stat_result) -> tuple[int, int]:
+    return st.st_dev, st.st_ino
+
+
+class _PlacedSuite:
+    """A generated suite written into an attempt, and what writing it created there.
+
+    The attempt's own tests run between writing and removing, and can swap a
+    directory on the suite's path for a link out of the worktree. So removal acts on
+    the directories as they were when the file was created, not on the path: through
+    the descriptors opened then where the platform has them, and otherwise only while
+    each path still leads to the same file or directory. Whatever cannot be confirmed
+    is left in place.
+    """
+
+    def __init__(self, anchor: Path, parts: list[str], name: str) -> None:
+        self.anchor = anchor  # an existing directory inside the attempt
+        self.parts = parts  # directories to create under it, outermost first
+        self.name = name
+        self.fds: list[int] = []  # the anchor, then each created directory
+        self.top: tuple[int, int] | None = None  # the outermost created directory
+        self.leaf: tuple[int, int] | None = None
+        self.file: tuple[int, int] | None = None
+        self.had_pycache = False
+        self.compiled_before: set[str] = set()
+
+    @property
+    def leaf_path(self) -> Path:
+        return self.anchor.joinpath(*self.parts)
+
+    def _is_compiled(self, name: str) -> bool:
+        return name.startswith(f"{Path(self.name).stem}.") and name.endswith(".pyc")
+
+    def create(self, content: str) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+        if DESCRIPTOR_CLEANUP:
+            self.fds.append(os.open(self.anchor, os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+            for part in self.parts:
+                os.mkdir(part, dir_fd=self.fds[-1])
+                if self.top is None:
+                    self.top = _ident(os.stat(part, dir_fd=self.fds[-1], follow_symlinks=False))
+                opened = os.open(part, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=self.fds[-1])
+                self.fds.append(opened)
+            self.leaf = _ident(os.fstat(self.fds[-1]))
+            self._note_pycache()
+            fd = os.open(self.name, flags, 0o644, dir_fd=self.fds[-1])
+        else:
+            path = self.anchor
+            for part in self.parts:
+                path = path / part
+                path.mkdir()
+                if self.top is None:
+                    self.top = _ident(os.lstat(path))
+            self.leaf = _ident(os.stat(self.leaf_path))
+            self._note_pycache()
+            fd = os.open(self.leaf_path / self.name, flags, 0o644)
+        self.file = _ident(os.fstat(fd))
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(content)
+
+    def _note_pycache(self) -> None:
+        pycache = self.leaf_path / "__pycache__"
+        self.had_pycache = os.path.lexists(pycache)
+        if self.had_pycache and not pycache.is_symlink() and pycache.is_dir():
+            self.compiled_before = {n for n in os.listdir(pycache) if self._is_compiled(n)}
+
+    def remove(self) -> None:
+        try:
+            if DESCRIPTOR_CLEANUP:
+                self._remove_by_descriptor()
+            else:
+                self._remove_by_path()
+        finally:
+            for fd in reversed(self.fds):
+                os.close(fd)
+
+    def _remove_by_descriptor(self) -> None:
+        if self.top is not None:
+            # Everything this wrote is inside the directory it created.
+            first = self.parts[0]
+            with contextlib.suppress(OSError):
+                if _ident(os.stat(first, dir_fd=self.fds[0], follow_symlinks=False)) == self.top:
+                    shutil.rmtree(first, dir_fd=self.fds[0], ignore_errors=True)
+            return
+        if self.file is None:
+            return
+        leaf = self.fds[-1]
+        with contextlib.suppress(OSError):
+            if _ident(os.stat(self.name, dir_fd=leaf, follow_symlinks=False)) == self.file:
+                os.unlink(self.name, dir_fd=leaf)
+        try:
+            # O_NOFOLLOW: a __pycache__ that is a link is never entered.
+            pycache = os.open("__pycache__", os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=leaf)
+        except OSError:
+            return
+        try:
+            for name in os.listdir(pycache):
+                if self._is_compiled(name) and name not in self.compiled_before:
+                    with contextlib.suppress(OSError):
+                        os.unlink(name, dir_fd=pycache)
+            empty = not os.listdir(pycache)
+        finally:
+            os.close(pycache)
+        if empty and not self.had_pycache:
+            with contextlib.suppress(OSError):
+                os.rmdir("__pycache__", dir_fd=leaf)
+
+    def _remove_by_path(self) -> None:
+        if self.top is not None:
+            top = self.anchor / self.parts[0]
+            with contextlib.suppress(OSError):
+                if _ident(os.lstat(top)) == self.top:
+                    shutil.rmtree(top, ignore_errors=True)
+            return
+        if self.file is None:
+            return
+        with contextlib.suppress(OSError):
+            if _ident(os.stat(self.leaf_path)) != self.leaf:
+                return
+            target = self.leaf_path / self.name
+            if _ident(os.lstat(target)) == self.file:
+                target.unlink()
+            pycache = self.leaf_path / "__pycache__"
+            if pycache.is_symlink() or not pycache.is_dir():
+                return
+            for name in os.listdir(pycache):
+                if self._is_compiled(name) and name not in self.compiled_before:
+                    (pycache / name).unlink(missing_ok=True)
+            if not self.had_pycache and not any(pycache.iterdir()):
+                pycache.rmdir()
 
 
 class GeneratedTestsValueFunction:
@@ -291,30 +427,15 @@ class GeneratedTestsValueFunction:
         # lexists: a dangling symlink in the attempt is something there too.
         if os.path.lexists(target):
             return Evaluation(score=0.0, detail=f"{suite.path} already exists in the attempt")
-        made: list[Path] = []
-        parent = target.parent
-        while not os.path.lexists(parent):
-            made.append(parent)
-            parent = parent.parent
-        pycache = target.parent / "__pycache__"
-        compiled_before = set(_compiled(pycache, target.stem))
-        had_pycache = os.path.lexists(pycache)
-        created: list[Path] = []
-        written = False
+        missing: list[str] = []
+        anchor = target.parent
+        while not os.path.lexists(anchor):
+            missing.append(anchor.name)
+            anchor = anchor.parent
+        placed = _PlacedSuite(anchor.resolve(), list(reversed(missing)), target.name)
         try:
-            # One directory at a time and the file exclusively, never through a link
-            # that appeared since the checks above.
             try:
-                for directory in reversed(made):
-                    directory.mkdir()
-                    created.append(directory)
-                # O_EXCL alone already refuses an existing link at the path itself;
-                # O_NOFOLLOW is added where the platform has it (not on Windows).
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-                fd = os.open(target, flags, 0o644)
-                written = True
-                with os.fdopen(fd, "w", encoding="utf-8") as out:
-                    out.write(suite.content)
+                placed.create(suite.content)
             except OSError as e:
                 return Evaluation(score=0.0, detail=f"{suite.path} could not be written: {e}")
             # No bytecode: a __pycache__ next to the suite may be a link out of the
@@ -327,22 +448,8 @@ class GeneratedTestsValueFunction:
             return await runner.evaluate(workdir)
         finally:
             # The worktree is snapshotted again if the search is interrupted; the
-            # generated tests must never end up on a node's branch. Only what this
-            # created is removed, and nothing reached through a symlink.
-            # Running the file leaves bytecode next to it unless PYTHONDONTWRITEBYTECODE
-            # is set; a directory this created holds nothing else.
-            if written:
-                target.unlink(missing_ok=True)
-            if created:
-                top = created[0]
-                if top.is_dir() and not top.is_symlink():
-                    shutil.rmtree(top, ignore_errors=True)
-            elif not pycache.is_symlink() and pycache.is_dir():
-                for compiled in _compiled(pycache, target.stem):
-                    if compiled not in compiled_before:
-                        compiled.unlink(missing_ok=True)
-                if not had_pycache and not any(pycache.iterdir()):
-                    pycache.rmdir()
+            # generated tests must never end up on a node's branch.
+            placed.remove()
 
     async def evaluate(self, workdir: Path) -> Evaluation:
         tested = await self.tests.evaluate(workdir)
