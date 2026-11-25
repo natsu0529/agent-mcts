@@ -18,7 +18,7 @@ scored by tests the agent never sees.
 - `run.py run` copies `repo/` into a fresh git repository **outside this checkout**,
   runs `agent-mcts run` there, then scores each node's branch on the hidden tests.
 - Arms differ only in `.agent-mcts.toml`: `tests` (value = visible tests), `judge`
-  (`judge = true`), `generated` (`generate_tests = true`) and `best-of-n`.
+  (`judge = true`), `generated` (`generate_tests = true`), `best-of-n` and `sequential`.
 - The first attempt of any run (`n1`) is what a single agent run would have produced,
   so it serves as the no-search baseline.
 - `best-of-n` is the same-budget baseline for `generated` ([#35]): every episode is a
@@ -29,8 +29,14 @@ scored by tests the agent never sees.
   `run` keeps in `results/suites/`, so the pair differs only in how the episodes were
   spent. `run` starts it after the `generated` cells. The report pairs the two per task
   and repeat, with the best best-of-N attempt by hidden score as an oracle row.
+- `sequential` is the second same-budget baseline ([#36]): one chain in which each
+  attempt revises the one before it with its failing test output (`root_width = 1`,
+  `refine_width = 1`, `max_depth` = the budget, `give_up_after = 0`), and the best
+  attempt along the chain by reward is returned. It reuses the same tests and is paired
+  the same way.
 
 [#35]: https://github.com/natsu0529/agent-mcts/issues/35
+[#36]: https://github.com/natsu0529/agent-mcts/issues/36
 
 ## Running it
 
@@ -44,7 +50,7 @@ uv run python bench/run.py report [--tasks semver duration]
 cells that already have a file in `results/`, so it can be stopped and restarted.
 Useful options: `--reps`, `--jobs`, `--nodes`, `--model`, `--tasks`, `--arms`.
 
-To add best-of-N to `generated` runs that already exist, run only that arm; it reuses
+To add a baseline to `generated` runs that already exist, run only that arm; it reuses
 their tests from `results/suites/`:
 
 ```bash
@@ -59,6 +65,48 @@ Runs made before `results/suites/` existed can have their tests copied in with
 
 `results/` holds one JSON file per run and `REPORT.md`, the output of `report` for each
 measurement.
+
+### Sixth measurement: sequential revision at the same budget
+
+2026-11-25, same setup as the fifth measurement: for each of the 20 `generated` runs on
+semver and duration, one `sequential` run, a single chain in which each attempt revises
+the one before it with its failing test output, five episodes, no branching ([#36]).
+Scored on the same, byte-identical suite files. With best-of-N this gives four ways to
+spend the same budget:
+
+| how the five episodes are spent | hidden score | better / worse than its first attempt | cost per run |
+|---|---:|---|---:|
+| one attempt (a single agent run) | 83-88% | | |
+| best-of-N: five first attempts, each told the earlier approaches | 93% | 11 / 1 | $1.78 |
+| sequential: one attempt, four revisions in a line | 92% | 19 / 0 | $2.34 |
+| search: the tree | 93% | 16 / 2 | $2.01 |
+
+Paired by task and repeat (difference in hidden-test points with its 95% interval, runs
+won, two-sided sign test):
+
+| | difference | runs | p |
+|---|---:|---|---:|
+| search - best-of-N | +0.1 (-3.7 to +3.9) | 11 - 8 | 0.65 |
+| search - sequential | +1.5 (-2.5 to +5.5) | 12 - 6 | 0.24 |
+| best-of-N - sequential | +1.5 (-2.6 to +5.6) | 9 - 6 | 0.61 |
+
+What it shows:
+
+- No pair of the three differs detectably on these two tasks at five episodes. The
+  intervals span about ±4 points, so differences of a few points either way remain
+  possible.
+- Revising with the failing tests improves on the starting attempt: the chain beat its
+  first attempt in 19 runs of 20 and was never below it (+8.3 points, from first
+  attempts that happened to be weaker, 83%). Within this measurement, the diverse
+  first attempts of best-of-N ended at a similar score.
+- What all three have in common is several attempts and a pick by generated tests.
+  These runs cannot say which ingredient matters most beyond that.
+- Cost per run: best-of-N $1.78, search $2.01, sequential $2.34. Revisions resume the
+  session and carry its context. Test writing, shared by all arms, is left out.
+- The caveats of the fifth measurement apply: an imperfect scorer (no suite passes
+  completely on the reference; leaving out `duration` repeat 5, whose suite does not
+  collect, moves search - sequential from +1.5 to +1.4 points), two tasks, one model,
+  five episodes.
 
 ### Fifth measurement: best-of-N at the same budget
 
