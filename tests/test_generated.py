@@ -3,6 +3,7 @@ suites a fake writer returns. The suites really run under pytest; no API calls."
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -320,11 +321,27 @@ def test_cleanup_does_not_follow_a_symlinked_pycache(
         "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n"
     )
     (work / "checks" / "__pycache__").symlink_to(outside)
+    before = {p.name: p.read_bytes() for p in outside.iterdir()}
 
-    asyncio.run(fn.evaluate(work))
+    evaluation = asyncio.run(fn.evaluate(work))
 
-    assert keep.read_bytes() == b"not ours"
-    assert not (work / "checks" / "test_x.py").exists()
+    assert evaluation.generated_score == 1.0
+    # Nothing deleted out there and nothing written there either, bytecode included.
+    assert {p.name: p.read_bytes() for p in outside.iterdir()} == before
+    assert not (work / "checks" / "test_agent_mcts_generated_1.py").exists()
+
+
+def test_suites_run_where_the_platform_lacks_o_nofollow(
+    calc_repo: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    fn = value_fn(calc_repo, FakeWriter([reply()]), tmp_path / "s", suites=1)
+
+    evaluation = asyncio.run(
+        fn.evaluate(attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n"))
+    )
+
+    assert evaluation.generated_score == 1.0
 
 
 def test_cleanup_keeps_bytecode_that_was_there_before(

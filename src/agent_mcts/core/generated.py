@@ -308,15 +308,21 @@ class GeneratedTestsValueFunction:
                 for directory in reversed(made):
                     directory.mkdir()
                     created.append(directory)
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                # O_EXCL alone already refuses an existing link at the path itself;
+                # O_NOFOLLOW is added where the platform has it (not on Windows).
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
                 fd = os.open(target, flags, 0o644)
                 written = True
                 with os.fdopen(fd, "w", encoding="utf-8") as out:
                     out.write(suite.content)
             except OSError as e:
                 return Evaluation(score=0.0, detail=f"{suite.path} could not be written: {e}")
+            # No bytecode: a __pycache__ next to the suite may be a link out of the
+            # attempt, and Python would write the suite's and conftest's .pyc there.
             runner = CommandValueFunction(
-                self.command.format(file=shlex.quote(suite.path)), timeout_s=self.timeout_s
+                self.command.format(file=shlex.quote(suite.path)),
+                timeout_s=self.timeout_s,
+                env={"PYTHONDONTWRITEBYTECODE": "1"},
             )
             return await runner.evaluate(workdir)
         finally:
