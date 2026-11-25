@@ -18,9 +18,18 @@ scored by tests the agent never sees.
 - `run.py run` copies `repo/` into a fresh git repository **outside this checkout**,
   runs `agent-mcts run` there, then scores each node's branch on the hidden tests.
 - Arms differ only in `.agent-mcts.toml`: `tests` (value = visible tests), `judge`
-  (`judge = true`) and `generated` (`generate_tests = true`).
+  (`judge = true`), `generated` (`generate_tests = true`) and `best-of-n`.
 - The first attempt of any run (`n1`) is what a single agent run would have produced,
   so it serves as the no-search baseline.
+- `best-of-n` is the same-budget baseline for `generated` ([#35]): every episode is an
+  independent first attempt under the root (`root_width` = the budget, `max_depth = 1`),
+  so nothing is revised, and the best by reward is returned. It is scored on the very
+  tests the `generated` run of the same task and repeat wrote (`generate_reuse`), which
+  `run` keeps in `results/suites/`, so the pair differs only in how the episodes were
+  spent. `run` starts it after the `generated` cells. The report pairs the two per task
+  and repeat, with the best best-of-N attempt by hidden score as an oracle row.
+
+[#35]: https://github.com/natsu0529/agent-mcts/issues/35
 
 ## Running it
 
@@ -33,6 +42,17 @@ uv run python bench/run.py report [--tasks semver duration]
 `run` calls your real agent CLI and takes a few hours with the defaults. It skips
 cells that already have a file in `results/`, so it can be stopped and restarted.
 Useful options: `--reps`, `--jobs`, `--nodes`, `--model`, `--tasks`, `--arms`.
+
+To add best-of-N to `generated` runs that already exist, run only that arm; it reuses
+their tests from `results/suites/`:
+
+```bash
+uv run python bench/run.py run --work /some/scratch/dir --arms best-of-n \
+  --tasks semver duration --reps 10
+```
+
+Runs made before `results/suites/` existed can have their tests copied in with
+`run.py collect-suites --work <their --work dir>`.
 
 ## Results so far
 

@@ -19,6 +19,52 @@ def attempts(run: dict) -> list[dict]:
     return [n for n in run["nodes"] if n["parent"] is not None and n["hidden"] is not None]
 
 
+def attempt_cost(run: dict) -> float:
+    """Dollars spent on the attempts and their scoring, without writing the tests.
+
+    The root's evaluation carries the test writer's spend in a `generated` run and
+    nothing in a `best-of-n` run, which reuses those tests, so it is left out of both.
+    """
+    return sum((n["cost_usd"] or 0.0) + (n["eval_cost_usd"] or 0.0) for n in attempts(run))
+
+
+def same_budget(runs: list[dict]) -> None:
+    """The search against best-of-N, paired by task and repeat on the same generated tests."""
+    by_cell = {(r["task"], r["arm"], r["rep"]): r for r in runs}
+    pairs: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
+    for (task, arm, rep), other in sorted(by_cell.items()):
+        search = by_cell.get((task, "generated", rep))
+        if arm == "best-of-n" and search is not None:
+            pairs[task].append((search, other))
+            pairs["ALL"].append((search, other))
+    if not pairs:
+        return
+    print("\n## Same budget and generated tests: the search against best-of-N\n")
+    print("Best-of-N spends the same episode budget on independent first attempts and")
+    print("is scored on the tests the `generated` run of the same task and repeat wrote,")
+    print("so each pair differs only in how the episodes were spent. Oracle: the best")
+    print("best-of-N attempt by hidden score, what a perfect picker would have returned.")
+    print("Cost leaves out writing the tests, which the pair shares.\n")
+    print(
+        "| task | pairs | search better | same | best-of-N better | search | best-of-N "
+        "| oracle best-of-N | episodes | cost per run |"
+    )
+    print("|---|---|---|---|---|---|---|---|---|---|")
+    for task, ps in sorted(pairs.items(), key=lambda kv: (kv[0] == "ALL", kv[0])):
+        d = [(s["chosen_hidden"] or 0.0) - (b["chosen_hidden"] or 0.0) for s, b in ps]
+        oracle = [max((n["hidden"] for n in attempts(b)), default=0.0) for _, b in ps]
+        print(
+            f"| {task} | {len(ps)} | {sum(x > 1e-9 for x in d)} | "
+            f"{sum(abs(x) <= 1e-9 for x in d)} | {sum(x < -1e-9 for x in d)} | "
+            f"{pct(mean(s['chosen_hidden'] or 0.0 for s, _ in ps))} | "
+            f"{pct(mean(b['chosen_hidden'] or 0.0 for _, b in ps))} | {pct(mean(oracle))} | "
+            f"{mean(len(attempts(s)) for s, _ in ps):.1f} / "
+            f"{mean(len(attempts(b)) for _, b in ps):.1f} | "
+            f"${mean(attempt_cost(s) for s, _ in ps):.2f} / "
+            f"${mean(attempt_cost(b) for _, b in ps):.2f} |"
+        )
+
+
 def main(tasks: list[str] | None = None) -> None:
     runs = [json.loads(p.read_text()) for p in RESULTS.glob("*.json")]
     runs.sort(key=lambda r: (r["task"], r["arm"], r["rep"]))
@@ -86,6 +132,8 @@ def main(tasks: list[str] | None = None) -> None:
             f"{100 * mean(d):+.1f} pt | {pct(min(f for f, _ in pairs))} | "
             f"{pct(min(c for _, c in pairs))} |"
         )
+
+    same_budget(runs)
 
     print("\n## Does the reward rank attempts the way the hidden tests do?\n")
     print("Pairs of attempts in the same run whose hidden scores differ: how often the")

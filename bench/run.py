@@ -6,9 +6,13 @@ scores every node of every run.
 
     python bench/run.py validate                 # hidden tests pass on the references
     python bench/run.py run --work DIR [--reps 2] [--jobs 3] [--tasks ...] [--arms ...]
+    python bench/run.py collect-suites --work DIR  # keep the generated tests of past runs
     python bench/run.py report [--tasks ...]
 
 `run` is resumable: a cell that already has a result file is skipped.
+
+The `best-of-n` arm is scored on the generated tests of the `generated` run with the same
+task and repeat (kept in results/suites/), so it runs after that arm.
 """
 
 from __future__ import annotations
@@ -42,7 +46,11 @@ ARMS = {
     "tests": "judge = false\n",
     "judge": "judge = true\njudge_timeout_s = 900\n",
     "generated": "generate_tests = true\n",
+    # The same episode budget as `generated`, spent on independent first attempts under
+    # the root (no revisions), scored on the suites that arm wrote for the same cell.
+    "best-of-n": "generate_tests = true\n",
 }
+SUITES = RESULTS / "suites"
 
 _HIDDEN_CONFTEST = """
 import signal, sys
@@ -178,11 +186,36 @@ def git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+def suites_path(task: str, rep: int) -> Path:
+    return SUITES / f"{task}-{rep}.json"
+
+
+def keep_suites(task: str, rep: int, repo: Path, run_id: str) -> bool:
+    """Copy the suites a `generated` run wrote into results/suites/, once."""
+    from agent_mcts import project
+
+    source = project.journal_path(repo, run_id).parent / "generated" / "suites.json"
+    dest = suites_path(task, rep)
+    if dest.exists() or not source.exists():
+        return dest.exists()
+    SUITES.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, dest)
+    return True
+
+
 def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: str) -> str:
     cell = f"{task}-{arm}-{rep}"
     result_path = RESULTS / f"{cell}.json"
     if result_path.exists():
         return f"{cell}: already done"
+    value = ARMS[arm]
+    search = f"max_nodes = {nodes}\nmax_cost_usd = 50.0\n"
+    if arm == "best-of-n":
+        suites = suites_path(task, rep)
+        if not suites.exists():
+            return f"{cell}: skipped, no {suites.relative_to(BENCH)}; run the generated arm first"
+        value += f"generate_reuse = {json.dumps(str(suites))}\n"
+        search += f"root_width = {nodes}\nmax_depth = 1\n"
     repo = work_root / cell
     if repo.exists():
         shutil.rmtree(repo)
@@ -194,7 +227,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
     (repo / ".agent-mcts.toml").write_text(
         f'model = "{model}"\n\n[value]\n'
         f'command = "{PYTHON} -m pytest -q -p no:cacheprovider tests"\n'
-        f"{ARMS[arm]}\n[search]\nmax_nodes = {nodes}\nmax_cost_usd = 50.0\n"
+        f"{value}\n[search]\n{search}"
     )
     git(repo, "init", "-q", "-b", "main")
     git(repo, "add", "-A")
@@ -229,6 +262,8 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
         model=model,
         max_nodes=nodes,
     )
+    if arm == "generated" and result.get("run_id"):
+        keep_suites(task, rep, repo, result["run_id"])
     RESULTS.mkdir(exist_ok=True)
     result_path.write_text(json.dumps(result, indent=2))
     return (
@@ -292,12 +327,29 @@ def cmd_run(args: argparse.Namespace) -> None:
     work_root = Path(args.work).resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     cells = [(t, a, r) for r in range(1, args.reps + 1) for t in args.tasks for a in args.arms]
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [
-            pool.submit(run_cell, t, a, r, work_root, args.nodes, args.model) for t, a, r in cells
-        ]
-        for future in futures:
-            print(future.result(), flush=True)
+    # best-of-n reuses the tests its `generated` cell writes, so it goes second.
+    for batch in (
+        [c for c in cells if c[1] != "best-of-n"],
+        [c for c in cells if c[1] == "best-of-n"],
+    ):
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = [
+                pool.submit(run_cell, t, a, r, work_root, args.nodes, args.model)
+                for t, a, r in batch
+            ]
+            for future in futures:
+                print(future.result(), flush=True)
+
+
+def cmd_collect_suites(args: argparse.Namespace) -> None:
+    """Keep the suites of `generated` runs made before results/suites/ existed."""
+    work_root = Path(args.work).resolve()
+    for path in sorted(RESULTS.glob("*-generated-*.json")):
+        run = json.loads(path.read_text())
+        kept = run.get("run_id") and keep_suites(
+            run["task"], run["rep"], work_root / path.stem, run["run_id"]
+        )
+        print(f"{path.stem}: {'kept' if kept else 'no suites found'}")
 
 
 def cmd_rescore(args: argparse.Namespace) -> None:
@@ -329,6 +381,9 @@ def main() -> None:
     p.add_argument("--tasks", nargs="+", default=task_names())
     p.add_argument("--arms", nargs="+", default=list(ARMS))
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("collect-suites")
+    p.add_argument("--work", required=True, help="the --work directory of the generated runs")
+    p.set_defaults(fn=cmd_collect_suites)
     p = sub.add_parser("rescore")
     p.add_argument("--work", required=True)
     p.set_defaults(fn=cmd_rescore)
