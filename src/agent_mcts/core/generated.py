@@ -22,7 +22,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -187,11 +186,13 @@ class SuiteWriter:
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)  # not on Windows
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 # Directory descriptors for every step of creating and removing a suite (POSIX).
-DESCRIPTOR_CLEANUP = (
-    {os.open, os.mkdir, os.stat, os.unlink, os.rmdir} <= os.supports_dir_fd
-    and os.listdir in os.supports_fd
-    and shutil.rmtree.avoids_symlink_attacks
-)
+DESCRIPTOR_CLEANUP = {
+    os.open,
+    os.mkdir,
+    os.stat,
+    os.unlink,
+    os.rmdir,
+} <= os.supports_dir_fd and os.listdir in os.supports_fd
 
 
 def _ident(st: os.stat_result) -> tuple[int, int]:
@@ -207,6 +208,10 @@ class _PlacedSuite:
     the descriptors opened then where the platform has them, and otherwise only while
     each path still leads to the same file or directory. Whatever cannot be confirmed
     is left in place.
+
+    Only the suite file and its bytecode are removed. A directory this created is
+    removed only once it is empty, so anything the tests wrote there stays, and a
+    directory the tests renamed still loses the suite (with descriptors).
     """
 
     def __init__(self, anchor: Path, parts: list[str], name: str) -> None:
@@ -214,7 +219,7 @@ class _PlacedSuite:
         self.parts = parts  # directories to create under it, outermost first
         self.name = name
         self.fds: list[int] = []  # the anchor, then each created directory
-        self.top: tuple[int, int] | None = None  # the outermost created directory
+        self.dirs: list[tuple[int, int]] = []  # each created directory, outermost first
         self.leaf: tuple[int, int] | None = None
         self.file: tuple[int, int] | None = None
         self.had_pycache = False
@@ -233,8 +238,7 @@ class _PlacedSuite:
             self.fds.append(os.open(self.anchor, os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
             for part in self.parts:
                 os.mkdir(part, dir_fd=self.fds[-1])
-                if self.top is None:
-                    self.top = _ident(os.stat(part, dir_fd=self.fds[-1], follow_symlinks=False))
+                self.dirs.append(_ident(os.stat(part, dir_fd=self.fds[-1], follow_symlinks=False)))
                 opened = os.open(part, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=self.fds[-1])
                 self.fds.append(opened)
             self.leaf = _ident(os.fstat(self.fds[-1]))
@@ -245,8 +249,7 @@ class _PlacedSuite:
             for part in self.parts:
                 path = path / part
                 path.mkdir()
-                if self.top is None:
-                    self.top = _ident(os.lstat(path))
+                self.dirs.append(_ident(os.lstat(path)))
             self.leaf = _ident(os.stat(self.leaf_path))
             self._note_pycache()
             fd = os.open(self.leaf_path / self.name, flags, 0o644)
@@ -271,16 +274,16 @@ class _PlacedSuite:
                 os.close(fd)
 
     def _remove_by_descriptor(self) -> None:
-        if self.top is not None:
-            # Everything this wrote is inside the directory it created.
-            first = self.parts[0]
+        if self.file is not None:
+            self._remove_file_by_descriptor(self.fds[-1])
+        # Innermost first; rmdir refuses a directory that is not empty.
+        for i in reversed(range(len(self.dirs))):
+            parent, name = self.fds[i], self.parts[i]
             with contextlib.suppress(OSError):
-                if _ident(os.stat(first, dir_fd=self.fds[0], follow_symlinks=False)) == self.top:
-                    shutil.rmtree(first, dir_fd=self.fds[0], ignore_errors=True)
-            return
-        if self.file is None:
-            return
-        leaf = self.fds[-1]
+                if _ident(os.stat(name, dir_fd=parent, follow_symlinks=False)) == self.dirs[i]:
+                    os.rmdir(name, dir_fd=parent)
+
+    def _remove_file_by_descriptor(self, leaf: int) -> None:
         with contextlib.suppress(OSError):
             if _ident(os.stat(self.name, dir_fd=leaf, follow_symlinks=False)) == self.file:
                 os.unlink(self.name, dir_fd=leaf)
@@ -302,28 +305,29 @@ class _PlacedSuite:
                 os.rmdir("__pycache__", dir_fd=leaf)
 
     def _remove_by_path(self) -> None:
-        if self.top is not None:
-            top = self.anchor / self.parts[0]
+        if self.file is not None:
             with contextlib.suppress(OSError):
-                if _ident(os.lstat(top)) == self.top:
-                    shutil.rmtree(top, ignore_errors=True)
+                self._remove_file_by_path()
+        paths = [self.anchor.joinpath(*self.parts[: i + 1]) for i in range(len(self.dirs))]
+        for path, ident in reversed(list(zip(paths, self.dirs, strict=True))):
+            with contextlib.suppress(OSError):
+                if _ident(os.lstat(path)) == ident:
+                    path.rmdir()
+
+    def _remove_file_by_path(self) -> None:
+        if _ident(os.stat(self.leaf_path)) != self.leaf:
             return
-        if self.file is None:
+        target = self.leaf_path / self.name
+        if _ident(os.lstat(target)) == self.file:
+            target.unlink()
+        pycache = self.leaf_path / "__pycache__"
+        if pycache.is_symlink() or not pycache.is_dir():
             return
-        with contextlib.suppress(OSError):
-            if _ident(os.stat(self.leaf_path)) != self.leaf:
-                return
-            target = self.leaf_path / self.name
-            if _ident(os.lstat(target)) == self.file:
-                target.unlink()
-            pycache = self.leaf_path / "__pycache__"
-            if pycache.is_symlink() or not pycache.is_dir():
-                return
-            for name in os.listdir(pycache):
-                if self._is_compiled(name) and name not in self.compiled_before:
-                    (pycache / name).unlink(missing_ok=True)
-            if not self.had_pycache and not any(pycache.iterdir()):
-                pycache.rmdir()
+        for name in os.listdir(pycache):
+            if self._is_compiled(name) and name not in self.compiled_before:
+                (pycache / name).unlink(missing_ok=True)
+        if not self.had_pycache and not any(pycache.iterdir()):
+            pycache.rmdir()
 
 
 class GeneratedTestsValueFunction:

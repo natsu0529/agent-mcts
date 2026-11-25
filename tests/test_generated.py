@@ -429,6 +429,57 @@ def test_cleanup_does_not_remove_a_created_directory_swapped_during_the_run(
     assert precious.read_text() == "not ours\n"
 
 
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_keeps_what_the_tests_wrote_in_a_directory_it_created(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(calc_repo, tmp_path, "deep/test_x.py", "echo done > deep/results.txt")
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 1.0
+    assert sorted(p.name for p in (work / "deep").iterdir()) == ["results.txt"]
+
+
+def test_cleanup_removes_the_suite_from_a_directory_the_tests_renamed(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    if not generated.DESCRIPTOR_CLEANUP:
+        pytest.skip("needs directory descriptors")
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(calc_repo, tmp_path, "deep/test_x.py", "mv deep renamed")
+
+    asyncio.run(fn.evaluate(work))
+
+    assert list((work / "renamed").iterdir()) == []
+    assert not (work / "deep").exists()
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_removes_the_directories_it_created_once_empty(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(calc_repo, tmp_path, "deep/er/test_x.py", "true")
+
+    asyncio.run(fn.evaluate(work))
+
+    assert not (work / "deep").exists()
+
+
 def test_a_new_run_can_reuse_the_suites_an_earlier_run_wrote(
     calc_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
