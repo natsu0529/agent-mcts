@@ -140,6 +140,14 @@ def run(
             "each attempt on them as well as on the value command.",
         ),
     ] = None,
+    generate_reuse: Annotated[
+        Path | None,
+        typer.Option(
+            "--generate-reuse",
+            help="With --generate-tests: score on the suites.json an earlier run wrote "
+            "instead of writing new tests.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Search for a solution to TASK with your coding agent."""
@@ -181,10 +189,12 @@ def run(
                 "be derived from a pytest value command. Set \\[value].generate_command "
                 f'in {project.CONFIG_FILENAME}, e.g. "npx jest {{file}}".'
             )
+    if generate_reuse is not None:
+        cfg.value.generate_reuse = str(generate_reuse.expanduser().resolve())
     reused = _reused_suites(cfg, repo)
     if reused is not None:
         if not cfg.value.generate_tests:
-            _fail("\\[value].generate_reuse needs generated tests on (--generate-tests)")
+            _fail("generate_reuse needs generated tests on (--generate-tests)")
         try:
             saved = json.loads(reused.read_text(encoding="utf-8"))
             [GeneratedSuite.model_validate(s) for s in saved["suites"]]
