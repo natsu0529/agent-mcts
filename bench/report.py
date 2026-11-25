@@ -69,9 +69,17 @@ def mean_or_none(values: list[float]) -> float | None:
     return mean(values) if values else None
 
 
+def first_hidden(run: dict) -> float | None:
+    """The hidden score of the first attempt, what a single agent run would return."""
+    return next((n["hidden"] for n in run["nodes"] if n["id"] == "n1"), None)
+
+
 def fully_scored(run: dict) -> bool:
-    """The run's answer and every attempt it evaluated have a hidden score."""
-    return run.get("chosen_hidden") is not None and not unscored(run)
+    """The run's answer, its first attempt and every attempt it evaluated have a
+    hidden score, so every score column of a table can average the same runs."""
+    return (
+        run.get("chosen_hidden") is not None and first_hidden(run) is not None and not unscored(run)
+    )
 
 
 def counted(scored: int, total: int) -> str:
@@ -211,7 +219,7 @@ def main(tasks: list[str] | None = None) -> None:
     print("|---|---|---|---|---|---|---|---|---|")
     for r in runs:
         a = attempts(r)
-        first = next((n["hidden"] for n in r["nodes"] if n["id"] == "n1"), None)
+        first = first_hidden(r)
         print(
             f"| {r['task']} | {r['arm']} | {r['rep']} | {len(episodes(r))} | {pct(first)} | "
             f"{pct(r['chosen_hidden'])} ({r['chosen']}) | "
@@ -232,12 +240,7 @@ def main(tasks: list[str] | None = None) -> None:
         # the score columns all leave it out, so each row averages the same runs, and
         # the runs column says how many were scored. Episodes and time count every run.
         scored = [r for r in rs if fully_scored(r)]
-        firsts = [
-            n["hidden"]
-            for r in scored
-            for n in r["nodes"]
-            if n["id"] == "n1" and n["hidden"] is not None
-        ]
+        firsts = [first_hidden(r) for r in scored]
         chosen = [r["chosen_hidden"] for r in scored]
         best = [max(n["hidden"] for n in attempts(r)) for r in scored if attempts(r)]
         print(
@@ -260,9 +263,8 @@ def main(tasks: list[str] | None = None) -> None:
         pairs = []
         arm_runs = [r for r in runs if r["arm"] == arm]
         for r in arm_runs:
-            first = next((n["hidden"] for n in r["nodes"] if n["id"] == "n1"), None)
-            if first is not None and fully_scored(r):
-                pairs.append((first, r["chosen_hidden"]))
+            if fully_scored(r):
+                pairs.append((first_hidden(r), r["chosen_hidden"]))
         d = [c - f for f, c in pairs]
         if not pairs:
             print(f"| {arm} | {counted(0, len(arm_runs))} | - | - | - | - | - | - |")
