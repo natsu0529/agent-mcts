@@ -69,6 +69,11 @@ def mean_or_none(values: list[float]) -> float | None:
     return mean(values) if values else None
 
 
+def counted(scored: int, total: int) -> str:
+    """A run count, saying how many were left out for lack of a hidden score."""
+    return str(total) if scored == total else f"{scored} of {total}"
+
+
 # Two-sided 95% quantiles of Student's t, by degrees of freedom (normal beyond 30).
 _T975 = [12.71, 4.30, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26, 2.23, 2.20, 2.18, 2.16, 2.14,
          2.13, 2.12, 2.11, 2.10, 2.09, 2.09, 2.08, 2.07, 2.07, 2.06, 2.06, 2.06, 2.05, 2.05,
@@ -218,11 +223,16 @@ def main(tasks: list[str] | None = None) -> None:
             for n in r["nodes"]
             if n["id"] == "n1" and n["hidden"] is not None
         ]
-        chosen = [r["chosen_hidden"] or 0.0 for r in rs]
-        best = [max((n["hidden"] for n in attempts(r)), default=0.0) for r in rs]
+        # A run without a hidden score for its answer is not a 0%: it is left out of
+        # the means, and the runs column says how many of them were scored.
+        scored = [r for r in rs if r["chosen_hidden"] is not None]
+        chosen = [r["chosen_hidden"] for r in scored]
+        best = [max(n["hidden"] for n in attempts(r)) for r in rs if attempts(r)]
         print(
-            f"| {task} | {arm} | {len(rs)} | {mean(len(episodes(r)) for r in rs):.1f} | "
-            f"{pct(mean_or_none(firsts))} | {pct(mean(chosen))} | {pct(mean(best))} | "
+            f"| {task} | {arm} | {counted(len(scored), len(rs))} | "
+            f"{mean(len(episodes(r)) for r in rs):.1f} | "
+            f"{pct(mean_or_none(firsts))} | {pct(mean_or_none(chosen))} | "
+            f"{pct(mean_or_none(best))} | "
             f"{mean((r.get('wall_s') or 0) for r in rs) / 60:.1f} |"
         )
 
@@ -236,16 +246,17 @@ def main(tasks: list[str] | None = None) -> None:
     print("|---|---|---|---|---|---|---|---|")
     for arm in sorted({r["arm"] for r in runs}):
         pairs = []
-        for r in runs:
+        arm_runs = [r for r in runs if r["arm"] == arm]
+        for r in arm_runs:
             first = next((n["hidden"] for n in r["nodes"] if n["id"] == "n1"), None)
-            if r["arm"] == arm and first is not None:
-                pairs.append((first, r["chosen_hidden"] or 0.0))
+            if first is not None and r["chosen_hidden"] is not None:
+                pairs.append((first, r["chosen_hidden"]))
         d = [c - f for f, c in pairs]
         if not pairs:
-            print(f"| {arm} | 0 | - | - | - | - | - | - |")
+            print(f"| {arm} | {counted(0, len(arm_runs))} | - | - | - | - | - | - |")
             continue
         print(
-            f"| {arm} | {len(pairs)} | {sum(x > 1e-9 for x in d)} | "
+            f"| {arm} | {counted(len(pairs), len(arm_runs))} | {sum(x > 1e-9 for x in d)} | "
             f"{sum(abs(x) <= 1e-9 for x in d)} | {sum(x < -1e-9 for x in d)} | "
             f"{100 * mean(d):+.1f} pt | {pct(min(f for f, _ in pairs))} | "
             f"{pct(min(c for _, c in pairs))} |"
