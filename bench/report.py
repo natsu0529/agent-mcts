@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
-from statistics import mean
+from statistics import mean, stdev
 
 RESULTS = Path(__file__).resolve().parent / "results"
 
@@ -28,41 +29,108 @@ def attempt_cost(run: dict) -> float:
     return sum((n["cost_usd"] or 0.0) + (n["eval_cost_usd"] or 0.0) for n in attempts(run))
 
 
+# Two-sided 95% quantiles of Student's t, by degrees of freedom (normal beyond 30).
+_T975 = [12.71, 4.30, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26, 2.23, 2.20, 2.18, 2.16, 2.14,
+         2.13, 2.12, 2.11, 2.10, 2.09, 2.09, 2.08, 2.07, 2.07, 2.06, 2.06, 2.06, 2.05, 2.05,
+         2.05, 2.04]  # fmt: skip
+
+
+def interval(diffs: list[float]) -> str:
+    """Mean of paired differences in points, with its 95% t interval."""
+    if len(diffs) < 2:
+        return "-"
+    t = _T975[len(diffs) - 2] if len(diffs) - 1 <= len(_T975) else 1.96
+    m, half = mean(diffs), t * stdev(diffs) / math.sqrt(len(diffs))
+    return f"{100 * m:+.1f} ({100 * (m - half):+.1f} to {100 * (m + half):+.1f})"
+
+
+def sign_test(wins: int, losses: int) -> str:
+    n = wins + losses
+    if n == 0:
+        return "-"
+    tail = sum(math.comb(n, i) for i in range(min(wins, losses) + 1)) / 2**n
+    return f"{min(1.0, 2 * tail):.2f}"
+
+
+def unpaired_reason(search: dict, baseline: dict) -> str | None:
+    """Why two runs of the same cell cannot be compared, or None when they can."""
+    for run in (search, baseline):
+        if run.get("error") or run.get("exit_code") or run.get("chosen_hidden") is None:
+            return f"{run['arm']} run did not finish scoring"
+    if search.get("model") != baseline.get("model"):
+        return "different models"
+    if search.get("max_nodes") != baseline.get("max_nodes"):
+        return "different budgets"
+    if not search.get("suites_sha256") or search.get("suites_sha256") != baseline.get(
+        "suites_sha256"
+    ):
+        return "not scored on the same generated tests"
+    if baseline.get("suites_from") != search.get("run_id"):
+        return "reused the tests of another generated run"
+    return None
+
+
+BASELINES = {
+    "best-of-n": (
+        "best-of-N",
+        "Best-of-N spends the same episode budget on first attempts under the root, with "
+        "no revisions. They are not independent samples: like the search's first "
+        "attempts, each is told the approaches of the ones before it and asked to take "
+        "a different one.",
+    ),
+}
+
+
 def same_budget(runs: list[dict]) -> None:
-    """The search against best-of-N, paired by task and repeat on the same generated tests."""
+    """The search against each same-budget baseline, paired by task and repeat."""
+    for arm, (name, how) in BASELINES.items():
+        same_budget_against(runs, arm, name, how)
+
+
+def same_budget_against(runs: list[dict], baseline: str, name: str, how: str) -> None:
     by_cell = {(r["task"], r["arm"], r["rep"]): r for r in runs}
     pairs: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
+    excluded: list[str] = []
     for (task, arm, rep), other in sorted(by_cell.items()):
         search = by_cell.get((task, "generated", rep))
-        if arm == "best-of-n" and search is not None:
-            pairs[task].append((search, other))
-            pairs["ALL"].append((search, other))
-    if not pairs:
+        if arm != baseline or search is None:
+            continue
+        reason = unpaired_reason(search, other)
+        if reason:
+            excluded.append(f"{task} {rep}: {reason}")
+            continue
+        pairs[task].append((search, other))
+        pairs["ALL"].append((search, other))
+    if not pairs and not excluded:
         return
-    print("\n## Same budget and generated tests: the search against best-of-N\n")
-    print("Best-of-N spends the same episode budget on independent first attempts and")
-    print("is scored on the tests the `generated` run of the same task and repeat wrote,")
-    print("so each pair differs only in how the episodes were spent. Oracle: the best")
-    print("best-of-N attempt by hidden score, what a perfect picker would have returned.")
-    print("Cost leaves out writing the tests, which the pair shares.\n")
+    print(f"\n## Same budget and generated tests: the search against {name}\n")
+    print(how)
+    print("Each pair is the `generated` run and the baseline run of the same task and")
+    print("repeat, with the same model and budget, both scored on the same generated test")
+    print("file (checked by hash). Difference: search minus baseline in hidden-test points,")
+    print(f"with a 95% t interval; p: two-sided sign test. Oracle: the best {name} attempt")
+    print("by hidden score. Cost leaves out writing the tests, which the pair shares.\n")
     print(
-        "| task | pairs | search better | same | best-of-N better | search | best-of-N "
-        "| oracle best-of-N | episodes | cost per run |"
+        f"| task | pairs | search better | same | {name} better | search | {name} "
+        f"| difference | p | oracle {name} | episodes | cost per run |"
     )
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for task, ps in sorted(pairs.items(), key=lambda kv: (kv[0] == "ALL", kv[0])):
-        d = [(s["chosen_hidden"] or 0.0) - (b["chosen_hidden"] or 0.0) for s, b in ps]
+        d = [s["chosen_hidden"] - b["chosen_hidden"] for s, b in ps]
+        wins, losses = sum(x > 1e-9 for x in d), sum(x < -1e-9 for x in d)
         oracle = [max((n["hidden"] for n in attempts(b)), default=0.0) for _, b in ps]
         print(
-            f"| {task} | {len(ps)} | {sum(x > 1e-9 for x in d)} | "
-            f"{sum(abs(x) <= 1e-9 for x in d)} | {sum(x < -1e-9 for x in d)} | "
-            f"{pct(mean(s['chosen_hidden'] or 0.0 for s, _ in ps))} | "
-            f"{pct(mean(b['chosen_hidden'] or 0.0 for _, b in ps))} | {pct(mean(oracle))} | "
+            f"| {task} | {len(ps)} | {wins} | {len(d) - wins - losses} | {losses} | "
+            f"{pct(mean(s['chosen_hidden'] for s, _ in ps))} | "
+            f"{pct(mean(b['chosen_hidden'] for _, b in ps))} | {interval(d)} | "
+            f"{sign_test(wins, losses)} | {pct(mean(oracle))} | "
             f"{mean(len(attempts(s)) for s, _ in ps):.1f} / "
             f"{mean(len(attempts(b)) for _, b in ps):.1f} | "
             f"${mean(attempt_cost(s) for s, _ in ps):.2f} / "
             f"${mean(attempt_cost(b) for _, b in ps):.2f} |"
         )
+    if excluded:
+        print(f"\nNot paired ({len(excluded)}): " + "; ".join(excluded) + ".")
 
 
 def main(tasks: list[str] | None = None) -> None:
