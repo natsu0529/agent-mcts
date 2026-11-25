@@ -11,8 +11,8 @@ scores every node of every run.
 
 `run` is resumable: a cell that already has a result file is skipped.
 
-The `best-of-n` arm is scored on the generated tests of the `generated` run with the same
-task and repeat (kept in results/suites/), so it runs after that arm.
+The `best-of-n` and `sequential` arms are scored on the generated tests of the `generated`
+run with the same task and repeat (kept in results/suites/), so they run after that arm.
 """
 
 from __future__ import annotations
@@ -50,9 +50,16 @@ ARMS = {
     # The same episode budget as `generated`, spent on first attempts under
     # the root (no revisions), scored on the suites that arm wrote for the same cell.
     "best-of-n": "generate_tests = true\n",
+    # The same budget again, spent on one chain: each attempt revises the one before it
+    # with its failing test output, and no branching (#36).
+    "sequential": "generate_tests = true\n",
 }
 # Arms that reuse the tests of the `generated` cell with the same task and repeat.
-BASELINE_ARMS = ("best-of-n",)
+# Each with how it spreads the `max_nodes` episodes over the tree.
+BASELINE_ARMS = {
+    "best-of-n": "root_width = {nodes}\nmax_depth = 1\n",
+    "sequential": "root_width = 1\nrefine_width = 1\nmax_depth = {nodes}\ngive_up_after = 0\n",
+}
 SUITES = RESULTS / "suites"
 
 _HIDDEN_CONFTEST = """
@@ -242,7 +249,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
         # must not name the file they are scored on.
         extra = ["--generate-reuse", str(suites)]
         source_run = generated_run_id(task, rep)
-        search += f"root_width = {nodes}\nmax_depth = 1\n"
+        search += BASELINE_ARMS[arm].format(nodes=nodes)
     repo = work_root / cell
     if repo.exists():
         shutil.rmtree(repo)
