@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_mcts.adapters.base import AdapterError, EpisodeResult, TokenUsage
+from agent_mcts.core import generated
 from agent_mcts.core.generated import (
     GeneratedSuite,
     GeneratedTestsValueFunction,
@@ -359,6 +360,73 @@ def test_cleanup_keeps_bytecode_that_was_there_before(
     asyncio.run(fn.evaluate(work))
 
     assert stale.read_bytes() == b"the attempt's own"
+
+
+def swapping_fn(
+    calc_repo: tuple[Path, str], tmp_path: Path, path: str, swap: str
+) -> GeneratedTestsValueFunction:
+    """Generated tests whose command swaps a directory on the suite's path mid-run."""
+    repo, head = calc_repo
+    return GeneratedTestsValueFunction(
+        FixedTests(1.0),
+        SuiteWriter(FakeWriter([reply(path)]), task="implement add", repo=repo, base_commit=head),
+        store=tmp_path / "s",
+        command=f"{swap} && echo {{file}} '1 passed'",
+        suites=1,
+    )
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_does_not_follow_a_directory_swapped_during_the_run(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    precious = outside / "test_agent_mcts_generated_1.py"
+    precious.write_text("not ours\n")
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    (work / "checks").mkdir()
+    fn = swapping_fn(
+        calc_repo, tmp_path, "checks/test_x.py", f"mv checks moved && ln -s {outside} checks"
+    )
+
+    asyncio.run(fn.evaluate(work))
+
+    assert precious.read_text() == "not ours\n"
+    assert sorted(p.name for p in outside.iterdir()) == [precious.name]
+    if generated.DESCRIPTOR_CLEANUP:
+        # Removed where it was created, which the run moved.
+        assert not (work / "moved" / precious.name).exists()
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_does_not_remove_a_created_directory_swapped_during_the_run(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    precious = outside / "inner" / "keep.txt"
+    precious.write_text("not ours\n")
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(
+        calc_repo, tmp_path, "deep/inner/test_x.py", f"mv deep moved && ln -s {outside} deep"
+    )
+
+    asyncio.run(fn.evaluate(work))
+
+    assert precious.read_text() == "not ours\n"
 
 
 def test_a_new_run_can_reuse_the_suites_an_earlier_run_wrote(
