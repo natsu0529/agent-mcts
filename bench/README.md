@@ -21,10 +21,11 @@ scored by tests the agent never sees.
   (`judge = true`), `generated` (`generate_tests = true`) and `best-of-n`.
 - The first attempt of any run (`n1`) is what a single agent run would have produced,
   so it serves as the no-search baseline.
-- `best-of-n` is the same-budget baseline for `generated` ([#35]): every episode is an
-  independent first attempt under the root (`root_width` = the budget, `max_depth = 1`),
-  so nothing is revised, and the best by reward is returned. It is scored on the very
-  tests the `generated` run of the same task and repeat wrote (`generate_reuse`), which
+- `best-of-n` is the same-budget baseline for `generated` ([#35]): every episode is a
+  first attempt under the root (`root_width` = the budget, `max_depth = 1`), each told
+  the approaches of the ones before it as in the search, so nothing is revised, and the
+  best by reward is returned. It is scored on the very
+  tests the `generated` run of the same task and repeat wrote (`--generate-reuse`), which
   `run` keeps in `results/suites/`, so the pair differs only in how the episodes were
   spent. `run` starts it after the `generated` cells. The report pairs the two per task
   and repeat, with the best best-of-N attempt by hidden score as an oracle row.
@@ -61,33 +62,45 @@ measurement.
 
 ### Fifth measurement: best-of-N at the same budget
 
-2026-11-25, v0.4.1 plus `generate_reuse`, Claude Code with `haiku`, 5-episode budget.
+2026-11-25, v0.4.1 plus `--generate-reuse`, Claude Code with `haiku`, 5-episode budget.
 For each of the 20 `generated` runs of the third measurement (semver and duration, 10
-each), one `best-of-n` run: five independent first attempts, no revisions, scored on the
-very tests that run wrote ([#35]). So each pair differs only in how the five episodes
-were spent.
+each), one `best-of-n` run: five first attempts under the root and no revisions, scored
+on the very tests that run wrote ([#35]). The suite file is byte-identical across each
+pair (`suites_sha256` in the results). The five attempts are not independent samples:
+as in the search, each is told the approaches of the attempts before it and asked to
+take a different one, the stronger of the two baselines #35 discussed.
 
-| | search better | same | best-of-N better | search | best-of-N | best-of-N, oracle pick | cost per run |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| duration | 7 | 1 | 2 | 96% | 96% | 96% | $1.57 / $1.59 |
-| semver | 4 | 0 | 6 | 90% | 91% | 93% | $2.45 / $1.98 |
-| both | 11 | 1 | 8 | 93% | 93% | 94% | $2.01 / $1.78 |
+| | search better | same | best-of-N better | search | best-of-N | difference (95% interval) | p | cost per run |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| duration | 7 | 1 | 2 | 96% | 96% | +0.4 (-2.2 to +3.0) pt | 0.18 | $1.57 / $1.59 |
+| semver | 4 | 0 | 6 | 90% | 91% | -0.3 (-8.3 to +7.8) pt | 0.75 | $2.45 / $1.98 |
+| both | 11 | 1 | 8 | 93% | 93% | +0.1 (-3.7 to +3.9) pt | 0.65 | $2.01 / $1.78 |
+
+Difference: search minus best-of-N on the hidden tests, paired by task and repeat; p:
+two-sided sign test. Cost leaves out writing the tests, which each pair shares.
 
 What it shows:
 
-- At this budget the tree buys nothing over best-of-N. The mean difference is +0.07
-  points for the search (95% interval ±3.8), and 11 against 8 runs is a coin flip
-  (sign test p = 0.65). The search costs about 13% more, since revisions carry longer
-  context. Cost leaves out writing the tests, which each pair shares.
-- Best-of-N improves on its own first attempt about as much as the search does: better
-  in 11 runs and worse in 1, +4.6 points against +4.8.
-- So the third measurement's gain over a single run comes mostly from making more
-  attempts and picking among them with generated tests, not from revising them. That
-  the revisions raised the hidden score 32 times in 40 does not contradict this: a
-  fresh attempt would usually have scored as well.
-- Two tasks, one model, five episodes. A larger budget or harder tasks may change this.
-  The sequential baseline ([#36](https://github.com/natsu0529/agent-mcts/issues/36)) separates the feedback from failing tests from the
-  tree.
+- No difference between the search and best-of-N was detected on these two tasks at
+  five episodes. The interval, about ±3.8 points, is wide enough to hide a real
+  difference of a few points either way. The search cost about 13% more per run.
+- Best-of-N improved on its own first attempt about as often as the search: better in
+  11 runs and worse in 1 (+4.6 points), against 16 and 2 (+4.8).
+- The revisions in the search raised the hidden score 32 times in 40, yet the search
+  did not end higher than best-of-N. These runs do not show that the tree or the
+  revisions add anything over diverse first attempts picked by generated tests; they
+  cannot rule it out either.
+- The generated tests are an imperfect scorer. Run against the reference
+  implementations, none of the 60 suites used here passes completely (mean 94% of
+  their tests pass), and one suite of `duration` repeat 5 does not even collect. Both
+  arms of a pair are scored on the same suites, and leaving that repeat out leaves the
+  difference at +0.07 points.
+- In these runs the path of the reused suite file sat in the `.agent-mcts.toml`
+  committed to the task repository, where an attempt could have read it. The attempts'
+  transcripts show the file only in directory listings, never its contents. The path is
+  now passed on the command line instead.
+- Two tasks, one model, five episodes. A larger budget, harder tasks or another model
+  may change this.
 
 ### Fourth measurement: a vague bug report
 
