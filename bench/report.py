@@ -142,6 +142,12 @@ BASELINES = {
         "attempts, each is told the approaches of the ones before it and asked to take "
         "a different one.",
     ),
+    "sequential": (
+        "sequential",
+        "Sequential spends it on one chain: each attempt revises the one before it with "
+        "its failing test output, without a tree, and the best attempt along the chain "
+        "by reward is returned.",
+    ),
 }
 
 
