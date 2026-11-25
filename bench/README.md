@@ -59,6 +59,36 @@ Runs made before `results/suites/` existed can have their tests copied in with
 `results/` holds one JSON file per run and `REPORT.md`, the output of `report` for each
 measurement.
 
+### Fifth measurement: best-of-N at the same budget
+
+2026-11-25, v0.4.1 plus `generate_reuse`, Claude Code with `haiku`, 5-episode budget.
+For each of the 20 `generated` runs of the third measurement (semver and duration, 10
+each), one `best-of-n` run: five independent first attempts, no revisions, scored on the
+very tests that run wrote ([#35]). So each pair differs only in how the five episodes
+were spent.
+
+| | search better | same | best-of-N better | search | best-of-N | best-of-N, oracle pick | cost per run |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| duration | 7 | 1 | 2 | 96% | 96% | 96% | $1.57 / $1.59 |
+| semver | 4 | 0 | 6 | 90% | 91% | 93% | $2.45 / $1.98 |
+| both | 11 | 1 | 8 | 93% | 93% | 94% | $2.01 / $1.78 |
+
+What it shows:
+
+- At this budget the tree buys nothing over best-of-N. The mean difference is +0.07
+  points for the search (95% interval ±3.8), and 11 against 8 runs is a coin flip
+  (sign test p = 0.65). The search costs about 13% more, since revisions carry longer
+  context. Cost leaves out writing the tests, which each pair shares.
+- Best-of-N improves on its own first attempt about as much as the search does: better
+  in 11 runs and worse in 1, +4.6 points against +4.8.
+- So the third measurement's gain over a single run comes mostly from making more
+  attempts and picking among them with generated tests, not from revising them. That
+  the revisions raised the hidden score 32 times in 40 does not contradict this: a
+  fresh attempt would usually have scored as well.
+- Two tasks, one model, five episodes. A larger budget or harder tasks may change this.
+  The sequential baseline ([#36](https://github.com/natsu0529/agent-mcts/issues/36)) separates the feedback from failing tests from the
+  tree.
+
 ### Fourth measurement: a vague bug report
 
 2026-11-22, v0.4.0, Claude Code with `haiku`, 5-episode budget, 10 runs per arm. The
