@@ -1,6 +1,7 @@
 """CLI end-to-end tests: a fake adapter is injected, everything else is real
 (engine, worktrees, journal, value command, git)."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -189,6 +190,25 @@ def test_run_rejects_unknown_agent(project_repo: Path) -> None:
     )
     assert result.exit_code == 1
     assert "unsupported agent" in result.output
+
+
+def test_run_rejects_reused_suites_without_generated_tests(project_repo: Path) -> None:
+    (project_repo / ".agent-mcts.toml").write_text('[value]\ngenerate_reuse = "s.json"\n')
+    result = runner.invoke(cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD])
+    assert result.exit_code == 1
+    assert "generate_reuse needs generated tests" in result.output
+    assert FakeAdapter.calls == 0
+
+
+def test_run_rejects_reused_suites_it_cannot_read(project_repo: Path) -> None:
+    (project_repo / ".agent-mcts.toml").write_text('[value]\ngenerate_reuse = "missing.json"\n')
+    result = runner.invoke(
+        cli.app,
+        ["run", "fix the widget", "-y", "--value", "python -m pytest -q", "--generate-tests"],
+    )
+    assert result.exit_code == 1
+    assert "cannot reuse generated tests" in result.output
+    assert FakeAdapter.calls == 0
 
 
 def test_run_rejects_non_positive_agent_timeout(project_repo: Path) -> None:
@@ -382,6 +402,45 @@ def test_writing_repo(project_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     command = f"{sys.executable} -m pytest -q -p no:cacheprovider {{file}}"
     (project_repo / ".agent-mcts.toml").write_text(f"[value]\ngenerate_command = '{command}'\n")
     return project_repo
+
+
+def test_run_reuses_suites_given_on_the_command_line(
+    test_writing_repo: Path, tmp_path: Path
+) -> None:
+    saved = tmp_path / "suites.json"
+    suite = {
+        "path": "tests/test_agent_mcts_generated_1.py",
+        "content": FakeTestWritingAdapter.suite,
+    }
+    saved.write_text(json.dumps({"suites": [suite], "errors": []}))
+
+    output = do_run(["-n", "2", "--generate-tests", "--generate-reuse", str(saved)])
+
+    assert "reused from" in output
+    assert FakeTestWritingAdapter.writer_calls == 0
+    assert "reward=1.00" in output
+    # The path stays out of the committed config: the agent's worktree cannot see it.
+    assert "generate_reuse" not in (test_writing_repo / ".agent-mcts.toml").read_text()
+    run_dir = test_writing_repo / ".agent-mcts" / "runs" / _latest_run(test_writing_repo)
+    assert (run_dir / "generated" / "suites.json").read_text() == saved.read_text()
+
+
+@pytest.mark.parametrize("path", ["../outside.py", "/tmp/test_x.py", "tests\\test_x.py"])
+def test_run_rejects_reused_suites_that_point_outside_the_repo(
+    test_writing_repo: Path, tmp_path: Path, path: str
+) -> None:
+    saved = tmp_path / "suites.json"
+    saved.write_text(json.dumps({"suites": [{"path": path, "content": "x = 1\n"}]}))
+    result = runner.invoke(
+        cli.app,
+        [
+            *["run", "fix it", "-y", "--value", VALUE_CMD, "--generate-tests"],
+            *["--generate-reuse", str(saved)],
+        ],
+    )
+    assert result.exit_code == 1
+    assert "inside the repository" in result.output
+    assert FakeAdapter.calls == 0
 
 
 def test_run_with_generated_tests(test_writing_repo: Path) -> None:

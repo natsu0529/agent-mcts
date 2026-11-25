@@ -7,6 +7,7 @@ children's revision prompts, closing the search's feedback loop.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from pathlib import Path
 from typing import Protocol
@@ -100,14 +101,18 @@ class CommandValueFunction:
     unparseable failure scores 0.0.
     """
 
-    def __init__(self, command: str, *, timeout_s: float = 600.0) -> None:
+    def __init__(
+        self, command: str, *, timeout_s: float = 600.0, env: dict[str, str] | None = None
+    ) -> None:
         self.command = command
         self.timeout_s = timeout_s
+        self.env = env
 
     async def evaluate(self, workdir: Path) -> Evaluation:
         proc = await asyncio.create_subprocess_shell(
             self.command,
             cwd=workdir,
+            env={**os.environ, **self.env} if self.env else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             # A test command is a process tree too — runners fork workers, suites start

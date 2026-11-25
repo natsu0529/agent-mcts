@@ -3,6 +3,7 @@ suites a fake writer returns. The suites really run under pytest; no API calls."
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,9 @@ import pytest
 from pydantic import ValidationError
 
 from agent_mcts.adapters.base import AdapterError, EpisodeResult, TokenUsage
+from agent_mcts.core import generated
 from agent_mcts.core.generated import (
+    GeneratedSuite,
     GeneratedTestsValueFunction,
     SuiteWriter,
     default_command,
@@ -263,6 +266,240 @@ def test_suites_are_stored_and_reused_by_a_resumed_search(
 
     assert resumed_writer.calls == []
     assert evaluation.generated_score == pytest.approx(0.25)  # only add(0, 0) == 0
+
+
+@pytest.mark.parametrize("path", ["../x/test_a.py", "/etc/test_a.py", "tests\\test_a.py", ""])
+def test_a_suite_path_must_stay_inside_the_repository(path: str) -> None:
+    with pytest.raises(ValidationError, match="suite path"):
+        GeneratedSuite(path=path, content="x = 1\n")
+
+
+def test_a_suite_is_not_written_through_a_symlink_out_of_the_attempt(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (work / "checks").symlink_to(outside)
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 0.0
+    assert "outside the attempt" in evaluation.detail
+    assert list(outside.iterdir()) == []
+
+
+def test_a_suite_is_not_written_through_a_dangling_symlink(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (work / "checks").mkdir()
+    (work / "checks" / "test_agent_mcts_generated_1.py").symlink_to(outside / "planted.py")
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 0.0
+    assert "already exists" in evaluation.detail
+    assert list(outside.iterdir()) == []
+    assert (work / "checks" / "test_agent_mcts_generated_1.py").is_symlink()
+
+
+def test_cleanup_does_not_follow_a_symlinked_pycache(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    keep = outside / "test_agent_mcts_generated_1.cpython-311.pyc"
+    keep.write_bytes(b"not ours")
+    (work / "checks").mkdir()
+    (work / "checks" / "conftest.py").write_text(
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n"
+    )
+    (work / "checks" / "__pycache__").symlink_to(outside)
+    before = {p.name: p.read_bytes() for p in outside.iterdir()}
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 1.0
+    # Nothing deleted out there and nothing written there either, bytecode included.
+    assert {p.name: p.read_bytes() for p in outside.iterdir()} == before
+    assert not (work / "checks" / "test_agent_mcts_generated_1.py").exists()
+
+
+def test_suites_run_where_the_platform_lacks_o_nofollow(
+    calc_repo: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    fn = value_fn(calc_repo, FakeWriter([reply()]), tmp_path / "s", suites=1)
+
+    evaluation = asyncio.run(
+        fn.evaluate(attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n"))
+    )
+
+    assert evaluation.generated_score == 1.0
+
+
+def test_cleanup_keeps_bytecode_that_was_there_before(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    (work / "checks" / "__pycache__").mkdir(parents=True)
+    (work / "checks" / "conftest.py").write_text(
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n"
+    )
+    stale = work / "checks" / "__pycache__" / "test_agent_mcts_generated_1.stale-0.pyc"
+    stale.write_bytes(b"the attempt's own")
+
+    asyncio.run(fn.evaluate(work))
+
+    assert stale.read_bytes() == b"the attempt's own"
+
+
+def swapping_fn(
+    calc_repo: tuple[Path, str], tmp_path: Path, path: str, swap: str
+) -> GeneratedTestsValueFunction:
+    """Generated tests whose command swaps a directory on the suite's path mid-run."""
+    repo, head = calc_repo
+    return GeneratedTestsValueFunction(
+        FixedTests(1.0),
+        SuiteWriter(FakeWriter([reply(path)]), task="implement add", repo=repo, base_commit=head),
+        store=tmp_path / "s",
+        command=f"{swap} && echo {{file}} '1 passed'",
+        suites=1,
+    )
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_does_not_follow_a_directory_swapped_during_the_run(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    precious = outside / "test_agent_mcts_generated_1.py"
+    precious.write_text("not ours\n")
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    (work / "checks").mkdir()
+    fn = swapping_fn(
+        calc_repo, tmp_path, "checks/test_x.py", f"mv checks moved && ln -s {outside} checks"
+    )
+
+    asyncio.run(fn.evaluate(work))
+
+    assert precious.read_text() == "not ours\n"
+    assert sorted(p.name for p in outside.iterdir()) == [precious.name]
+    if generated.DESCRIPTOR_CLEANUP:
+        # Removed where it was created, which the run moved.
+        assert not (work / "moved" / precious.name).exists()
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_does_not_remove_a_created_directory_swapped_during_the_run(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    precious = outside / "inner" / "keep.txt"
+    precious.write_text("not ours\n")
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(
+        calc_repo, tmp_path, "deep/inner/test_x.py", f"mv deep moved && ln -s {outside} deep"
+    )
+
+    asyncio.run(fn.evaluate(work))
+
+    assert precious.read_text() == "not ours\n"
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_keeps_what_the_tests_wrote_in_a_directory_it_created(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(calc_repo, tmp_path, "deep/test_x.py", "echo done > deep/results.txt")
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 1.0
+    assert sorted(p.name for p in (work / "deep").iterdir()) == ["results.txt"]
+
+
+def test_cleanup_removes_the_suite_from_a_directory_the_tests_renamed(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    if not generated.DESCRIPTOR_CLEANUP:
+        pytest.skip("needs directory descriptors")
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(calc_repo, tmp_path, "deep/test_x.py", "mv deep renamed")
+
+    asyncio.run(fn.evaluate(work))
+
+    assert list((work / "renamed").iterdir()) == []
+    assert not (work / "deep").exists()
+
+
+@pytest.mark.parametrize("descriptors", [True, False])
+def test_cleanup_removes_the_directories_it_created_once_empty(
+    calc_repo: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    descriptors: bool,
+) -> None:
+    monkeypatch.setattr(
+        generated, "DESCRIPTOR_CLEANUP", generated.DESCRIPTOR_CLEANUP and descriptors
+    )
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    fn = swapping_fn(calc_repo, tmp_path, "deep/er/test_x.py", "true")
+
+    asyncio.run(fn.evaluate(work))
+
+    assert not (work / "deep").exists()
+
+
+def test_a_new_run_can_reuse_the_suites_an_earlier_run_wrote(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    earlier = tmp_path / "earlier"
+    asyncio.run(
+        value_fn(calc_repo, FakeWriter([reply()]), earlier, suites=1).evaluate(
+            attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+        )
+    )
+
+    writer = FakeWriter([])
+    store = tmp_path / "later"
+    fn = value_fn(calc_repo, writer, store, suites=3, reuse=earlier / "suites.json")
+    evaluation = asyncio.run(fn.evaluate(attempt(tmp_path, "b", "def add(a, b):\n    return 0\n")))
+
+    assert writer.calls == []
+    assert evaluation.generated_score == pytest.approx(0.25)
+    assert evaluation.cost_usd == 0.0
+    # The new run keeps its own copy, so a resume does not depend on the original file.
+    assert (store / "suites.json").read_text() == (earlier / "suites.json").read_text()
 
 
 def test_a_failed_writer_leaves_the_tests_alone_in_charge(

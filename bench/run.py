@@ -6,14 +6,19 @@ scores every node of every run.
 
     python bench/run.py validate                 # hidden tests pass on the references
     python bench/run.py run --work DIR [--reps 2] [--jobs 3] [--tasks ...] [--arms ...]
+    python bench/run.py collect-suites --work DIR  # keep the generated tests of past runs
     python bench/run.py report [--tasks ...]
 
 `run` is resumable: a cell that already has a result file is skipped.
+
+The `best-of-n` and `sequential` arms are scored on the generated tests of the `generated`
+run with the same task and repeat (kept in results/suites/), so they run after that arm.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -42,7 +47,20 @@ ARMS = {
     "tests": "judge = false\n",
     "judge": "judge = true\njudge_timeout_s = 900\n",
     "generated": "generate_tests = true\n",
+    # The same episode budget as `generated`, spent on first attempts under
+    # the root (no revisions), scored on the suites that arm wrote for the same cell.
+    "best-of-n": "generate_tests = true\n",
+    # The same budget again, spent on one chain: each attempt revises the one before it
+    # with its failing test output, and no branching (#36).
+    "sequential": "generate_tests = true\n",
 }
+# Arms that reuse the tests of the `generated` cell with the same task and repeat.
+# Each with how it spreads the `max_nodes` episodes over the tree.
+BASELINE_ARMS = {
+    "best-of-n": "root_width = {nodes}\nmax_depth = 1\n",
+    "sequential": "root_width = 1\nrefine_width = 1\nmax_depth = {nodes}\ngive_up_after = 0\n",
+}
+SUITES = RESULTS / "suites"
 
 _HIDDEN_CONFTEST = """
 import signal, sys
@@ -178,11 +196,60 @@ def git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+def suites_path(task: str, rep: int) -> Path:
+    return SUITES / f"{task}-{rep}.json"
+
+
+def sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+def run_suites(repo: Path, run_id: str) -> Path:
+    """Where a run stored the suites it was scored on (written or reused)."""
+    from agent_mcts import project
+
+    return project.journal_path(repo, run_id).parent / "generated" / "suites.json"
+
+
+def keep_suites(task: str, rep: int, repo: Path, run_id: str) -> str:
+    """Make results/suites/ hold the suites this `generated` run wrote; say what happened."""
+    source = run_suites(repo, run_id)
+    dest = suites_path(task, rep)
+    if not source.exists():
+        return "no suites found"
+    if sha256(dest) == sha256(source):
+        return "kept"
+    replaced = dest.exists()
+    SUITES.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, dest)
+    # Baseline results scored on the old file record its hash, so the report stops
+    # pairing them with this run instead of comparing across different tests.
+    return "replaced older suites" if replaced else "kept"
+
+
+def generated_run_id(task: str, rep: int) -> str | None:
+    path = RESULTS / f"{task}-generated-{rep}.json"
+    return json.loads(path.read_text()).get("run_id") if path.exists() else None
+
+
 def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: str) -> str:
     cell = f"{task}-{arm}-{rep}"
     result_path = RESULTS / f"{cell}.json"
     if result_path.exists():
         return f"{cell}: already done"
+    extra: list[str] = []
+    source_run: str | None = None
+    value = ARMS[arm]
+    search = f"max_nodes = {nodes}\nmax_cost_usd = 50.0\n"
+    if arm in BASELINE_ARMS:
+        suites = suites_path(task, rep)
+        if not suites.exists():
+            return f"{cell}: skipped, no {suites.relative_to(BENCH)}; run the generated arm first"
+        # On the command line, not in the committed config: the attempts' worktrees
+        # must not name the file they are scored on.
+        extra = ["--generate-reuse", str(suites)]
+        source_run = generated_run_id(task, rep)
+        search += BASELINE_ARMS[arm].format(nodes=nodes)
     repo = work_root / cell
     if repo.exists():
         shutil.rmtree(repo)
@@ -194,7 +261,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
     (repo / ".agent-mcts.toml").write_text(
         f'model = "{model}"\n\n[value]\n'
         f'command = "{PYTHON} -m pytest -q -p no:cacheprovider tests"\n'
-        f"{ARMS[arm]}\n[search]\nmax_nodes = {nodes}\nmax_cost_usd = 50.0\n"
+        f"{value}\n[search]\n{search}"
     )
     git(repo, "init", "-q", "-b", "main")
     git(repo, "add", "-A")
@@ -212,7 +279,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
     started = time.time()
     with (work_root / f"{cell}.log").open("w") as log:
         proc = subprocess.run(
-            [AGENT_MCTS, "run", task_prompt(task), "-y"],
+            [AGENT_MCTS, "run", task_prompt(task), "-y", *extra],
             cwd=repo,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -229,6 +296,10 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
         model=model,
         max_nodes=nodes,
     )
+    if arm == "generated" and result.get("run_id"):
+        print(f"{cell}: suites {keep_suites(task, rep, repo, result['run_id'])}", flush=True)
+    if source_run is not None:
+        result["suites_from"] = source_run
     RESULTS.mkdir(exist_ok=True)
     result_path.write_text(json.dumps(result, indent=2))
     return (
@@ -285,6 +356,8 @@ def score_run(task: str, repo: Path) -> dict:
         "best_by_reward": by_reward.id if by_reward else None,
         "selection": sel.model_dump(mode="json") if sel else None,
         "selections_made": len(tree.selections),
+        # The generated tests every node was scored on, to pair runs on equal tests.
+        "suites_sha256": sha256(run_suites(repo, run_id)),
     }
 
 
@@ -292,12 +365,53 @@ def cmd_run(args: argparse.Namespace) -> None:
     work_root = Path(args.work).resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     cells = [(t, a, r) for r in range(1, args.reps + 1) for t in args.tasks for a in args.arms]
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [
-            pool.submit(run_cell, t, a, r, work_root, args.nodes, args.model) for t, a, r in cells
-        ]
-        for future in futures:
-            print(future.result(), flush=True)
+    # best-of-n reuses the tests its `generated` cell writes, so it goes second.
+    for batch in (
+        [c for c in cells if c[1] not in BASELINE_ARMS],
+        [c for c in cells if c[1] in BASELINE_ARMS],
+    ):
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = [
+                pool.submit(run_cell, t, a, r, work_root, args.nodes, args.model)
+                for t, a, r in batch
+            ]
+            for future in futures:
+                print(future.result(), flush=True)
+
+
+def cmd_collect_suites(args: argparse.Namespace) -> None:
+    """Keep the suites of `generated` runs made before results/suites/ existed."""
+    work_root = Path(args.work).resolve()
+    for path in sorted(RESULTS.glob("*-generated-*.json")):
+        run = json.loads(path.read_text())
+        if run.get("run_id"):
+            done = keep_suites(run["task"], run["rep"], work_root / path.stem, run["run_id"])
+            print(f"{path.stem}: {done}")
+
+
+def cmd_stamp(args: argparse.Namespace) -> None:
+    """Record suite provenance in results made before `run` recorded it.
+
+    `suites_sha256` is hashed from the run's own stored copy in its --work directory,
+    so it shows what the run was scored on; baselines also get `suites_from`, the
+    `generated` run of the same cell whose suites they reused.
+    """
+    for path in sorted(RESULTS.glob("*.json")):
+        run = json.loads(path.read_text())
+        if run.get("arm") not in ("generated", *BASELINE_ARMS) or not run.get("run_id"):
+            continue
+        for work in args.work:
+            stored = run_suites(Path(work).resolve() / path.stem, run["run_id"])
+            if stored.exists():
+                run["suites_sha256"] = sha256(stored)
+                break
+        else:
+            print(f"{path.stem}: no stored suites under any --work directory")
+            continue
+        if run["arm"] in BASELINE_ARMS:
+            run["suites_from"] = generated_run_id(run["task"], run["rep"])
+        path.write_text(json.dumps(run, indent=2))
+        print(f"{path.stem}: {run['suites_sha256'][:12]}")
 
 
 def cmd_rescore(args: argparse.Namespace) -> None:
@@ -329,6 +443,12 @@ def main() -> None:
     p.add_argument("--tasks", nargs="+", default=task_names())
     p.add_argument("--arms", nargs="+", default=list(ARMS))
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("collect-suites")
+    p.add_argument("--work", required=True, help="the --work directory of the generated runs")
+    p.set_defaults(fn=cmd_collect_suites)
+    p = sub.add_parser("stamp")
+    p.add_argument("--work", nargs="+", required=True, help="--work directories of the runs")
+    p.set_defaults(fn=cmd_stamp)
     p = sub.add_parser("rescore")
     p.add_argument("--work", required=True)
     p.set_defaults(fn=cmd_rescore)

@@ -98,5 +98,6 @@
   "wall_s": 819.8,
   "exit_code": 0,
   "model": "haiku",
-  "max_nodes": 5
+  "max_nodes": 5,
+  "suites_sha256": "0d880d5d4d17b30165f58df3692c18fae107a87f83c858ed42a1f66b3fb4b0ed"
 }

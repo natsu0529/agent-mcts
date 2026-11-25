@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +19,12 @@ from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, AgentBackend, ClaudeCodeAdapter, CodexCliAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
-from agent_mcts.core.generated import GeneratedTestsValueFunction, SuiteWriter, default_command
+from agent_mcts.core.generated import (
+    GeneratedSuite,
+    GeneratedTestsValueFunction,
+    SuiteWriter,
+    default_command,
+)
 from agent_mcts.core.judge import (
     FinalSelector,
     HybridValueFunction,
@@ -134,6 +140,14 @@ def run(
             "each attempt on them as well as on the value command.",
         ),
     ] = None,
+    generate_reuse: Annotated[
+        Path | None,
+        typer.Option(
+            "--generate-reuse",
+            help="With --generate-tests: score on the suites.json an earlier run wrote "
+            "instead of writing new tests.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Search for a solution to TASK with your coding agent."""
@@ -175,6 +189,17 @@ def run(
                 "be derived from a pytest value command. Set \\[value].generate_command "
                 f'in {project.CONFIG_FILENAME}, e.g. "npx jest {{file}}".'
             )
+    if generate_reuse is not None:
+        cfg.value.generate_reuse = str(generate_reuse.expanduser().resolve())
+    reused = _reused_suites(cfg, repo)
+    if reused is not None:
+        if not cfg.value.generate_tests:
+            _fail("generate_reuse needs generated tests on (--generate-tests)")
+        try:
+            saved = json.loads(reused.read_text(encoding="utf-8"))
+            [GeneratedSuite.model_validate(s) for s in saved["suites"]]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _fail(f"cannot reuse generated tests from {reused}: {exc}")
     cfg.model = model or cfg.model
     backends = _build_backends(agent_name, cfg=cfg, timeout_s=timeout_s)
 
@@ -234,7 +259,11 @@ def _build_backends(agent_name: str, *, cfg: project.ProjectConfig, timeout_s: f
                 timeout_s=cfg.value.generate_timeout_s,
                 for_judge=True,
             )
-            label = f" + {cfg.value.generate_suites} generated test suites"
+            label = (
+                f" + generated test suites reused from {cfg.value.generate_reuse}"
+                if cfg.value.generate_reuse
+                else f" + {cfg.value.generate_suites} generated test suites"
+            )
             return _Backends(agent_name, adapter, None, label, writer)
         if not cfg.value.judge:
             return _Backends(agent_name, adapter, None, "")
@@ -276,6 +305,14 @@ def _print_plan(
     )
 
 
+def _reused_suites(cfg: project.ProjectConfig, repo: Path) -> Path | None:
+    """`[value].generate_reuse` as a path, relative ones taken from the repo root."""
+    if not cfg.value.generate_reuse:
+        return None
+    path = Path(cfg.value.generate_reuse).expanduser()
+    return path if path.is_absolute() else repo / path
+
+
 def _build_engine(
     tree: Tree,
     *,
@@ -300,6 +337,7 @@ def _build_engine(
             suites=cfg.value.generate_suites,
             w_test=cfg.value.w_test,
             w_generated=cfg.value.w_generated,
+            reuse=_reused_suites(cfg, repo),
         )
     if backends.judge is not None:
         judge = LLMJudge(backends.judge, task=meta.task)

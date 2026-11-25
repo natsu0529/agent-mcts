@@ -145,6 +145,20 @@ def test_stops_when_tree_is_saturated(repo: Path) -> None:
     assert len(tree.nodes) == 3
 
 
+def test_width_one_makes_a_chain_that_returns_its_best_attempt(repo: Path) -> None:
+    """The bench's `sequential` baseline: each attempt revises the one before it."""
+    config = SearchConfig(max_nodes=4, root_width=1, refine_width=1, max_depth=4, give_up_after=0)
+    tree, backend, _ = run_search(repo, [0.0, 0.3, 0.8, 0.2, 0.1], config)
+
+    assert len(backend.calls) == 4
+    assert [len(tree.path(n.id)) - 1 for n in tree.nodes.values() if n.parent_id] == [1, 2, 3, 4]
+    # Every revision forked the previous attempt, even after the score dropped.
+    chain = [n for n in tree.nodes.values() if n.parent_id]
+    assert [c["resume"] for c in backend.calls[1:]] == [n.session_id for n in chain[:-1]]
+    best = tree.best()
+    assert best is not None and best.reward == pytest.approx(0.8)
+
+
 def test_adapter_failure_marks_node_and_continues(repo: Path) -> None:
     config = SearchConfig(max_nodes=3, root_width=3)
     tree, backend, _ = run_search(

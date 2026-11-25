@@ -17,15 +17,16 @@ scores new nodes on exactly the tests the old ones saw.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import re
 import shlex
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from agent_mcts.adapters.base import AdapterError, AgentBackend, TokenUsage
 from agent_mcts.core.value import CommandValueFunction, Evaluation, ValueFunction
@@ -74,6 +75,18 @@ class GeneratedSuite(BaseModel):
 
     path: str  # relative to the repository root, POSIX separators
     content: str
+
+    @field_validator("path")
+    @classmethod
+    def _inside_the_repository(cls, path: str) -> str:
+        # Suites can come from a file (`generate_reuse`), not only from `parse_suite`,
+        # and the path is written to and deleted in every attempt's worktree.
+        posix = PurePosixPath(path)
+        if not path or "\\" in path or posix.is_absolute() or ".." in posix.parts:
+            raise ValueError(f"suite path must be relative and inside the repository: {path!r}")
+        if posix.name in ("", "."):
+            raise ValueError(f"suite path must name a file: {path!r}")
+        return path
 
 
 class WriterResult(BaseModel):
@@ -170,6 +183,153 @@ class SuiteWriter:
         return spent.model_copy(update={"suite": suite})
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)  # not on Windows
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+# Directory descriptors for every step of creating and removing a suite (POSIX).
+DESCRIPTOR_CLEANUP = {
+    os.open,
+    os.mkdir,
+    os.stat,
+    os.unlink,
+    os.rmdir,
+} <= os.supports_dir_fd and os.listdir in os.supports_fd
+
+
+def _ident(st: os.stat_result) -> tuple[int, int]:
+    return st.st_dev, st.st_ino
+
+
+class _PlacedSuite:
+    """A generated suite written into an attempt, and what writing it created there.
+
+    The attempt's own tests run between writing and removing, and can swap a
+    directory on the suite's path for a link out of the worktree. So removal acts on
+    the directories as they were when the file was created, not on the path: through
+    the descriptors opened then where the platform has them, and otherwise only while
+    each path still leads to the same file or directory. Whatever cannot be confirmed
+    is left in place.
+
+    Only the suite file and its bytecode are removed. A directory this created is
+    removed only once it is empty, so anything the tests wrote there stays, and a
+    directory the tests renamed still loses the suite (with descriptors).
+    """
+
+    def __init__(self, anchor: Path, parts: list[str], name: str) -> None:
+        self.anchor = anchor  # an existing directory inside the attempt
+        self.parts = parts  # directories to create under it, outermost first
+        self.name = name
+        self.fds: list[int] = []  # the anchor, then each created directory
+        self.dirs: list[tuple[int, int]] = []  # each created directory, outermost first
+        self.leaf: tuple[int, int] | None = None
+        self.file: tuple[int, int] | None = None
+        self.had_pycache = False
+        self.compiled_before: set[str] = set()
+
+    @property
+    def leaf_path(self) -> Path:
+        return self.anchor.joinpath(*self.parts)
+
+    def _is_compiled(self, name: str) -> bool:
+        return name.startswith(f"{Path(self.name).stem}.") and name.endswith(".pyc")
+
+    def create(self, content: str) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+        if DESCRIPTOR_CLEANUP:
+            self.fds.append(os.open(self.anchor, os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+            for part in self.parts:
+                os.mkdir(part, dir_fd=self.fds[-1])
+                self.dirs.append(_ident(os.stat(part, dir_fd=self.fds[-1], follow_symlinks=False)))
+                opened = os.open(part, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=self.fds[-1])
+                self.fds.append(opened)
+            self.leaf = _ident(os.fstat(self.fds[-1]))
+            self._note_pycache()
+            fd = os.open(self.name, flags, 0o644, dir_fd=self.fds[-1])
+        else:
+            path = self.anchor
+            for part in self.parts:
+                path = path / part
+                path.mkdir()
+                self.dirs.append(_ident(os.lstat(path)))
+            self.leaf = _ident(os.stat(self.leaf_path))
+            self._note_pycache()
+            fd = os.open(self.leaf_path / self.name, flags, 0o644)
+        self.file = _ident(os.fstat(fd))
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(content)
+
+    def _note_pycache(self) -> None:
+        pycache = self.leaf_path / "__pycache__"
+        self.had_pycache = os.path.lexists(pycache)
+        if self.had_pycache and not pycache.is_symlink() and pycache.is_dir():
+            self.compiled_before = {n for n in os.listdir(pycache) if self._is_compiled(n)}
+
+    def remove(self) -> None:
+        try:
+            if DESCRIPTOR_CLEANUP:
+                self._remove_by_descriptor()
+            else:
+                self._remove_by_path()
+        finally:
+            for fd in reversed(self.fds):
+                os.close(fd)
+
+    def _remove_by_descriptor(self) -> None:
+        if self.file is not None:
+            self._remove_file_by_descriptor(self.fds[-1])
+        # Innermost first; rmdir refuses a directory that is not empty.
+        for i in reversed(range(len(self.dirs))):
+            parent, name = self.fds[i], self.parts[i]
+            with contextlib.suppress(OSError):
+                if _ident(os.stat(name, dir_fd=parent, follow_symlinks=False)) == self.dirs[i]:
+                    os.rmdir(name, dir_fd=parent)
+
+    def _remove_file_by_descriptor(self, leaf: int) -> None:
+        with contextlib.suppress(OSError):
+            if _ident(os.stat(self.name, dir_fd=leaf, follow_symlinks=False)) == self.file:
+                os.unlink(self.name, dir_fd=leaf)
+        try:
+            # O_NOFOLLOW: a __pycache__ that is a link is never entered.
+            pycache = os.open("__pycache__", os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=leaf)
+        except OSError:
+            return
+        try:
+            for name in os.listdir(pycache):
+                if self._is_compiled(name) and name not in self.compiled_before:
+                    with contextlib.suppress(OSError):
+                        os.unlink(name, dir_fd=pycache)
+            empty = not os.listdir(pycache)
+        finally:
+            os.close(pycache)
+        if empty and not self.had_pycache:
+            with contextlib.suppress(OSError):
+                os.rmdir("__pycache__", dir_fd=leaf)
+
+    def _remove_by_path(self) -> None:
+        if self.file is not None:
+            with contextlib.suppress(OSError):
+                self._remove_file_by_path()
+        paths = [self.anchor.joinpath(*self.parts[: i + 1]) for i in range(len(self.dirs))]
+        for path, ident in reversed(list(zip(paths, self.dirs, strict=True))):
+            with contextlib.suppress(OSError):
+                if _ident(os.lstat(path)) == ident:
+                    path.rmdir()
+
+    def _remove_file_by_path(self) -> None:
+        if _ident(os.stat(self.leaf_path)) != self.leaf:
+            return
+        target = self.leaf_path / self.name
+        if _ident(os.lstat(target)) == self.file:
+            target.unlink()
+        pycache = self.leaf_path / "__pycache__"
+        if pycache.is_symlink() or not pycache.is_dir():
+            return
+        for name in os.listdir(pycache):
+            if self._is_compiled(name) and name not in self.compiled_before:
+                (pycache / name).unlink(missing_ok=True)
+        if not self.had_pycache and not any(pycache.iterdir()):
+            pycache.rmdir()
+
+
 class GeneratedTestsValueFunction:
     """`w_test * tests + w_generated * generated`, weights normalized to sum to 1.
 
@@ -178,6 +338,9 @@ class GeneratedTestsValueFunction:
     the first evaluation, the root baseline, whose evaluation cost carries their spend.
     If no suite could be written, every node scores 0 on that half and the reason is
     noted in its detail, so the ranking falls back to the tests alone.
+
+    With `reuse`, the suites are taken from that `suites.json` (one an earlier run
+    stored) instead of being written, so two runs can be scored on the same tests.
     """
 
     def __init__(
@@ -191,6 +354,7 @@ class GeneratedTestsValueFunction:
         w_test: float = 0.5,
         w_generated: float = 0.5,
         timeout_s: float = 600.0,
+        reuse: Path | None = None,
     ) -> None:
         total = w_test + w_generated
         if w_test < 0 or w_generated < 0 or total <= 0:
@@ -205,6 +369,7 @@ class GeneratedTestsValueFunction:
         self.w_test = w_test / total
         self.w_generated = w_generated / total
         self.timeout_s = timeout_s
+        self.reuse = reuse
         self._lock = asyncio.Lock()
         self._loaded: list[GeneratedSuite] | None = None
         self._write_errors: list[str] = []
@@ -218,6 +383,13 @@ class GeneratedTestsValueFunction:
         async with self._lock:
             if self._loaded is not None:
                 return self._loaded, None
+            if self.reuse is not None and not self._index_file.exists():
+                # Copied into this run's store, so a resumed search reads it from there
+                # even if the original file has moved.
+                self.store.mkdir(parents=True, exist_ok=True)
+                self._index_file.write_text(
+                    self.reuse.read_text(encoding="utf-8"), encoding="utf-8"
+                )
             if self._index_file.exists():
                 saved = json.loads(self._index_file.read_text(encoding="utf-8"))
                 self._loaded = [GeneratedSuite.model_validate(s) for s in saved["suites"]]
@@ -249,37 +421,39 @@ class GeneratedTestsValueFunction:
             return self._loaded, spend
 
     async def _run_suite(self, workdir: Path, suite: GeneratedSuite) -> Evaluation:
-        target = workdir / suite.path
-        existed = target.exists()
-        if existed:
+        root = workdir.resolve()
+        target = root / suite.path
+        # A symlinked directory in the attempt could still lead outside the worktree.
+        if not target.parent.resolve().is_relative_to(root):
+            return Evaluation(
+                score=0.0, detail=f"{suite.path} would be written outside the attempt"
+            )
+        # lexists: a dangling symlink in the attempt is something there too.
+        if os.path.lexists(target):
             return Evaluation(score=0.0, detail=f"{suite.path} already exists in the attempt")
-        made: list[Path] = []
-        parent = target.parent
-        while not parent.exists():
-            made.append(parent)
-            parent = parent.parent
-        pycache = target.parent / "__pycache__"
-        had_pycache = pycache.exists()
+        missing: list[str] = []
+        anchor = target.parent
+        while not os.path.lexists(anchor):
+            missing.append(anchor.name)
+            anchor = anchor.parent
+        placed = _PlacedSuite(anchor.resolve(), list(reversed(missing)), target.name)
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(suite.content, encoding="utf-8")
+            try:
+                placed.create(suite.content)
+            except OSError as e:
+                return Evaluation(score=0.0, detail=f"{suite.path} could not be written: {e}")
+            # No bytecode: a __pycache__ next to the suite may be a link out of the
+            # attempt, and Python would write the suite's and conftest's .pyc there.
             runner = CommandValueFunction(
-                self.command.format(file=shlex.quote(suite.path)), timeout_s=self.timeout_s
+                self.command.format(file=shlex.quote(suite.path)),
+                timeout_s=self.timeout_s,
+                env={"PYTHONDONTWRITEBYTECODE": "1"},
             )
             return await runner.evaluate(workdir)
         finally:
             # The worktree is snapshotted again if the search is interrupted; the
             # generated tests must never end up on a node's branch.
-            # Running the file leaves bytecode next to it unless PYTHONDONTWRITEBYTECODE
-            # is set; a directory this created holds nothing else.
-            target.unlink(missing_ok=True)
-            if made:
-                shutil.rmtree(made[-1], ignore_errors=True)
-            else:
-                for compiled in pycache.glob(f"{target.stem}.*.pyc"):
-                    compiled.unlink(missing_ok=True)
-                if not had_pycache and pycache.is_dir() and not any(pycache.iterdir()):
-                    pycache.rmdir()
+            placed.remove()
 
     async def evaluate(self, workdir: Path) -> Evaluation:
         tested = await self.tests.evaluate(workdir)
@@ -309,6 +483,13 @@ class GeneratedTestsValueFunction:
             reasons = "; ".join(self._write_errors) or "no suite was written"
             return f"Generated tests unavailable ({reasons}); scored on tests alone."
         failures = [line for r in runs for line in _FAILED_LINE.findall(r.detail)]
+        # A suite that scored below 1 without pytest failure lines (refused before it
+        # ran, timed out, ...) says why in the first line of its detail.
+        failures += [
+            r.detail.splitlines()[0][:200]
+            for r in runs
+            if r.score < 1 and r.detail.strip() and not _FAILED_LINE.search(r.detail)
+        ]
         head = (
             f"Generated tests ({generated:.2f}, mean over {len(suites)} suites written from "
             "the task by another agent; a few of them may be wrong):"
