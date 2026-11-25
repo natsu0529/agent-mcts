@@ -28,7 +28,11 @@ scored by tests the agent never sees.
   tests the `generated` run of the same task and repeat wrote (`--generate-reuse`), which
   `run` keeps in `results/suites/`, so the pair differs only in how the episodes were
   spent. `run` starts it after the `generated` cells. The report pairs the two per task
-  and repeat, with the best best-of-N attempt by hidden score as an oracle row.
+  and repeat, with the best best-of-N attempt by hidden score as an oracle row. A pair is
+  left out, with the reason listed, when either run failed, an attempt has no hidden
+  score, the model, budget or test file differ, or a run's answer is not the one today's
+  selection rule returns (the `tablefmt` `generated` runs predate the v0.4.1 rule).
+  Episodes and cost count every attempt, scored or not.
 
 [#35]: https://github.com/natsu0529/agent-mcts/issues/35
 
