@@ -288,6 +288,62 @@ def test_a_suite_is_not_written_through_a_symlink_out_of_the_attempt(
     assert list(outside.iterdir()) == []
 
 
+def test_a_suite_is_not_written_through_a_dangling_symlink(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (work / "checks").mkdir()
+    (work / "checks" / "test_agent_mcts_generated_1.py").symlink_to(outside / "planted.py")
+
+    evaluation = asyncio.run(fn.evaluate(work))
+
+    assert evaluation.generated_score == 0.0
+    assert "already exists" in evaluation.detail
+    assert list(outside.iterdir()) == []
+    assert (work / "checks" / "test_agent_mcts_generated_1.py").is_symlink()
+
+
+def test_cleanup_does_not_follow_a_symlinked_pycache(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    keep = outside / "test_agent_mcts_generated_1.cpython-311.pyc"
+    keep.write_bytes(b"not ours")
+    (work / "checks").mkdir()
+    (work / "checks" / "conftest.py").write_text(
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n"
+    )
+    (work / "checks" / "__pycache__").symlink_to(outside)
+
+    asyncio.run(fn.evaluate(work))
+
+    assert keep.read_bytes() == b"not ours"
+    assert not (work / "checks" / "test_x.py").exists()
+
+
+def test_cleanup_keeps_bytecode_that_was_there_before(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    fn = value_fn(calc_repo, FakeWriter([reply("checks/test_x.py")]), tmp_path / "s", suites=1)
+    work = attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+    (work / "checks" / "__pycache__").mkdir(parents=True)
+    (work / "checks" / "conftest.py").write_text(
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n"
+    )
+    stale = work / "checks" / "__pycache__" / "test_agent_mcts_generated_1.stale-0.pyc"
+    stale.write_bytes(b"the attempt's own")
+
+    asyncio.run(fn.evaluate(work))
+
+    assert stale.read_bytes() == b"the attempt's own"
+
+
 def test_a_new_run_can_reuse_the_suites_an_earlier_run_wrote(
     calc_repo: tuple[Path, str], tmp_path: Path
 ) -> None:
