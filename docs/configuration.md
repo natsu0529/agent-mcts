@@ -20,6 +20,7 @@ w_judge = 0.5
 # generate_suites = 3             # how many test files to write, once per run
 # generate_command = "npx jest {file}"  # runs one file; derived from `command` for pytest
 # w_generated = 0.5               # reward = w_test * tests + w_generated * generated tests
+# generate_reuse = ".agent-mcts/runs/<run>/generated/suites.json"  # score on an earlier run's tests
 
 [search]
 max_nodes = 20                    # episode budget
@@ -64,6 +65,7 @@ The judge only reads diffs, and on the [benchmark](../bench/README.md) that was 
 - The node's reward is `w_test * tests + w_generated * generated`, where `generated` is the mean pass ratio over the suites. Failing generated tests are quoted in children's revision prompts, marked as written by another agent and possibly wrong.
 - Some generated tests are wrong. On the benchmark nearly all of those failed on every attempt alike, so they barely changed the ranking: the mean over three suites picked the better attempt of a pair 58 times in 62.
 - The suites are stored with the run (`.agent-mcts/runs/<run>/generated/`), and `resume` scores new attempts on the same files. Writing them is charged to the baseline evaluation, so `show n0` shows its cost; it counts toward `max_cost_usd` but not toward `max_nodes`.
+- To score a new run on the tests an earlier run wrote, for instance to compare two settings on equal tests, set `generate_reuse` to that run's `generated/suites.json`. The file is copied into the new run, and nothing is written or charged for tests.
 - If no suite could be written, every attempt scores 0 on that half and the reason appears in its detail, so the tests alone decide.
 - Generated tests can share the mistake the task is about. On a bug report about misaligned Japanese text, the writer measured alignment in characters, as the buggy code did, so the unfixed code passed its tests and every fix failed them. The untouched repository is therefore offered as the answer only when every attempt does worse on your own tests; otherwise the best attempt is, and `run` and `show` print a warning when the generated tests (or the judge) scored the untouched repository higher.
 

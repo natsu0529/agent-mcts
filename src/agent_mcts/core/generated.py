@@ -178,6 +178,9 @@ class GeneratedTestsValueFunction:
     the first evaluation, the root baseline, whose evaluation cost carries their spend.
     If no suite could be written, every node scores 0 on that half and the reason is
     noted in its detail, so the ranking falls back to the tests alone.
+
+    With `reuse`, the suites are taken from that `suites.json` (one an earlier run
+    stored) instead of being written, so two runs can be scored on the same tests.
     """
 
     def __init__(
@@ -191,6 +194,7 @@ class GeneratedTestsValueFunction:
         w_test: float = 0.5,
         w_generated: float = 0.5,
         timeout_s: float = 600.0,
+        reuse: Path | None = None,
     ) -> None:
         total = w_test + w_generated
         if w_test < 0 or w_generated < 0 or total <= 0:
@@ -205,6 +209,7 @@ class GeneratedTestsValueFunction:
         self.w_test = w_test / total
         self.w_generated = w_generated / total
         self.timeout_s = timeout_s
+        self.reuse = reuse
         self._lock = asyncio.Lock()
         self._loaded: list[GeneratedSuite] | None = None
         self._write_errors: list[str] = []
@@ -218,6 +223,13 @@ class GeneratedTestsValueFunction:
         async with self._lock:
             if self._loaded is not None:
                 return self._loaded, None
+            if self.reuse is not None and not self._index_file.exists():
+                # Copied into this run's store, so a resumed search reads it from there
+                # even if the original file has moved.
+                self.store.mkdir(parents=True, exist_ok=True)
+                self._index_file.write_text(
+                    self.reuse.read_text(encoding="utf-8"), encoding="utf-8"
+                )
             if self._index_file.exists():
                 saved = json.loads(self._index_file.read_text(encoding="utf-8"))
                 self._loaded = [GeneratedSuite.model_validate(s) for s in saved["suites"]]

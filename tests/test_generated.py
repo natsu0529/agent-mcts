@@ -265,6 +265,28 @@ def test_suites_are_stored_and_reused_by_a_resumed_search(
     assert evaluation.generated_score == pytest.approx(0.25)  # only add(0, 0) == 0
 
 
+def test_a_new_run_can_reuse_the_suites_an_earlier_run_wrote(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    earlier = tmp_path / "earlier"
+    asyncio.run(
+        value_fn(calc_repo, FakeWriter([reply()]), earlier, suites=1).evaluate(
+            attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n")
+        )
+    )
+
+    writer = FakeWriter([])
+    store = tmp_path / "later"
+    fn = value_fn(calc_repo, writer, store, suites=3, reuse=earlier / "suites.json")
+    evaluation = asyncio.run(fn.evaluate(attempt(tmp_path, "b", "def add(a, b):\n    return 0\n")))
+
+    assert writer.calls == []
+    assert evaluation.generated_score == pytest.approx(0.25)
+    assert evaluation.cost_usd == 0.0
+    # The new run keeps its own copy, so a resume does not depend on the original file.
+    assert (store / "suites.json").read_text() == (earlier / "suites.json").read_text()
+
+
 def test_a_failed_writer_leaves_the_tests_alone_in_charge(
     calc_repo: tuple[Path, str], tmp_path: Path
 ) -> None:

@@ -45,6 +45,9 @@ class ValueConfig(BaseModel):
     # when that runs pytest.
     generate_command: str | None = None
     generate_timeout_s: float = Field(default=900.0, gt=0)  # per writer episode
+    # Score on the suites an earlier run wrote (the `generated/suites.json` next to its
+    # journal) instead of writing new ones, e.g. to compare two settings on equal tests.
+    generate_reuse: str | None = None
     w_generated: float = Field(default=0.5, ge=0)
 
     @model_validator(mode="after")

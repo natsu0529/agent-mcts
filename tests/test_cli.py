@@ -191,6 +191,25 @@ def test_run_rejects_unknown_agent(project_repo: Path) -> None:
     assert "unsupported agent" in result.output
 
 
+def test_run_rejects_reused_suites_without_generated_tests(project_repo: Path) -> None:
+    (project_repo / ".agent-mcts.toml").write_text('[value]\ngenerate_reuse = "s.json"\n')
+    result = runner.invoke(cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD])
+    assert result.exit_code == 1
+    assert "generate_reuse needs generated tests" in result.output
+    assert FakeAdapter.calls == 0
+
+
+def test_run_rejects_reused_suites_it_cannot_read(project_repo: Path) -> None:
+    (project_repo / ".agent-mcts.toml").write_text('[value]\ngenerate_reuse = "missing.json"\n')
+    result = runner.invoke(
+        cli.app,
+        ["run", "fix the widget", "-y", "--value", "python -m pytest -q", "--generate-tests"],
+    )
+    assert result.exit_code == 1
+    assert "cannot reuse generated tests" in result.output
+    assert FakeAdapter.calls == 0
+
+
 def test_run_rejects_non_positive_agent_timeout(project_repo: Path) -> None:
     result = runner.invoke(
         cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD, "--agent-timeout", "0"]
