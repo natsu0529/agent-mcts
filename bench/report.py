@@ -121,7 +121,9 @@ def unpaired_reason(search: dict, baseline: dict) -> str | None:
         # one today's rule returns, or the two runs were picked by different rules.
         if run.get("selection") is None and run.get("chosen") != current_choice(run):
             return f"{run['arm']} run picked its answer with an older rule"
-    if search.get("model") != baseline.get("model"):
+    if search.get("model") != baseline.get("model") or search.get("model_id") != baseline.get(
+        "model_id"
+    ):
         return "different models"
     if search.get("max_nodes") != baseline.get("max_nodes"):
         return "different budgets"
