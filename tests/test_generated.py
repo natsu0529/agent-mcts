@@ -159,6 +159,29 @@ def test_parse_suite_without_a_code_block_is_none() -> None:
     assert parse_suite("<TestFile>tests/test_x.py</TestFile> no code here", index=1) is None
 
 
+def test_parse_suite_keeps_backticks_inside_the_code() -> None:
+    # A test of Markdown code spans: the ``` inside the string must not end the block.
+    body = 'def test_fence():\n    assert render("```a```") == "<code>a</code>"\n'
+    suite = parse_suite(reply(body=body), index=1)
+    assert suite is not None
+    assert suite.content == body
+
+
+def test_parse_suite_closes_on_a_fence_at_least_as_long() -> None:
+    body = "x = 1\n```\ny = 2\n"
+    text = f"<TestFile>tests/test_x.py</TestFile>\n````python\n{body}````\nthe end\n"
+    suite = parse_suite(text, index=1)
+    assert suite is not None
+    assert suite.content == body
+
+
+def test_parse_suite_ignores_text_after_the_block() -> None:
+    text = reply() + "Notes:\n```\nnot the file\n```\n"
+    suite = parse_suite(text, index=1)
+    assert suite is not None
+    assert suite.content == SUITE
+
+
 @pytest.mark.parametrize(
     ("value_command", "expected"),
     [
@@ -517,6 +540,20 @@ def test_a_failed_writer_leaves_the_tests_alone_in_charge(
     assert "Generated tests unavailable" in evaluation.detail
     assert "boom" in evaluation.detail
     assert evaluation.cost_known is False  # the crashed writer's spend is lost
+
+
+def test_a_suite_that_does_not_compile_is_a_writer_error(
+    calc_repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    broken = 'def test_cut():\n    assert render("\n'
+    fn = value_fn(calc_repo, FakeWriter([reply(body=broken)]), tmp_path / "store", suites=1)
+
+    evaluation = asyncio.run(
+        fn.evaluate(attempt(tmp_path, "a", "def add(a, b):\n    return a + b\n"))
+    )
+
+    assert evaluation.generated_score is None
+    assert "does not compile" in evaluation.detail
 
 
 def test_an_attempt_file_at_the_suite_path_is_not_overwritten(
