@@ -48,7 +48,7 @@ scored by tests the agent never sees.
 
 ```bash
 uv run python bench/run.py validate                       # references pass, stubs fail
-uv run python bench/run.py run --work /some/scratch/dir   # every task x 3 arms x 2 repeats
+uv run python bench/run.py run --work /some/scratch/dir   # every task x every arm x 2 repeats
 uv run python bench/run.py report [--tasks semver duration]
 ```
 
@@ -75,6 +75,21 @@ uv run python bench/run.py report --tasks mytask
 
 Runs made before `results/suites/` existed can have their tests copied in with
 `run.py collect-suites --work <their --work dir>`.
+
+### Which model
+
+`--model` is passed to Claude Code as it is, and an alias such as `haiku` moves to a newer
+model when one is released. On 2026-11-27 `haiku` resolved to `claude-haiku-5-5`, and on
+that model single attempts (one episode each) passed every hidden test of `semver` and
+`duration` (5 of 5 each), at about $0.03 per attempt. With `claude-haiku-4-5`, four
+single attempts on `semver` passed 49-94% (mean 69%) at $0.12-0.49 per attempt, in line
+with the measurements below, which were all made with `haiku` before that date and so
+were most likely made with `claude-haiku-4-5`.
+
+So the default is now the full ID `claude-haiku-4-5`, which keeps new runs comparable with
+the ones below. `run` also records the ID the model resolved to (`model_id`) and the
+Claude Code version in each result, and the report pairs two runs only when both have the
+same `model_id`. Results made before 2026-11-27 have none.
 
 ## Results so far
 

@@ -237,10 +237,48 @@ def generated_run_id(task: str, rep: int) -> str | None:
     return json.loads(path.read_text()).get("run_id") if path.exists() else None
 
 
-def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: str) -> str:
+def resolve_model(model: str) -> dict[str, str | None]:
+    """What `--model` names today, from one tiny `claude -p` call, and the CLI version.
+
+    An alias such as `haiku` moves to a newer model when one is released, so the alias
+    alone does not say which model a result came from.
+    """
+
+    def ask(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["claude", *args], capture_output=True, text=True, timeout=180, check=False
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return proc.stdout if proc.returncode == 0 else None
+
+    model_id = None
+    if out := ask("-p", "--model", model, "--output-format", "json", "Reply with OK."):
+        try:
+            ids = sorted(json.loads(out).get("modelUsage") or {})
+        except (json.JSONDecodeError, AttributeError):
+            ids = []
+        model_id = ",".join(ids) or None
+    version = ask("--version")
+    return {"model_id": model_id, "claude_version": version.strip() if version else None}
+
+
+def run_cell(
+    task: str,
+    arm: str,
+    rep: int,
+    work_root: Path,
+    nodes: int,
+    model: str,
+    resolved: dict[str, str | None] | None = None,
+) -> str:
     cell = f"{task}-{arm}-{rep}"
     result_path = RESULTS / f"{cell}.json"
     if result_path.exists():
+        done = json.loads(result_path.read_text())
+        if done.get("model") != model:
+            return f"{cell}: already done with model {done.get('model')}, not {model}; skipped"
         return f"{cell}: already done"
     extra: list[str] = []
     source_run: str | None = None
@@ -302,6 +340,7 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
         exit_code=proc.returncode,
         model=model,
         max_nodes=nodes,
+        **(resolved or {}),
     )
     if arm == "generated" and result.get("run_id"):
         print(f"{cell}: suites {keep_suites(task, rep, repo, result['run_id'])}", flush=True)
@@ -372,6 +411,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     work_root = Path(args.work).resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     cells = [(t, a, r) for r in range(1, args.reps + 1) for t in args.tasks for a in args.arms]
+    resolved = resolve_model(args.model)
+    print(
+        f"model {args.model} is {resolved['model_id'] or 'unknown'}; "
+        f"Claude Code {resolved['claude_version'] or 'unknown'}",
+        flush=True,
+    )
     # best-of-n reuses the tests its `generated` cell writes, so it goes second.
     for batch in (
         [c for c in cells if c[1] not in BASELINE_ARMS],
@@ -379,7 +424,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     ):
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             futures = [
-                pool.submit(run_cell, t, a, r, work_root, args.nodes, args.model)
+                pool.submit(run_cell, t, a, r, work_root, args.nodes, args.model, resolved)
                 for t, a, r in batch
             ]
             for future in futures:
@@ -446,7 +491,9 @@ def main() -> None:
     p.add_argument("--reps", type=int, default=2)
     p.add_argument("--jobs", type=int, default=3)
     p.add_argument("--nodes", type=int, default=5)
-    p.add_argument("--model", default="haiku")
+    # A full ID, not the `haiku` alias: the alias moved to a newer model on which every
+    # task here is solved in one attempt (see "Which model" in README.md).
+    p.add_argument("--model", default="claude-haiku-4-5")
     p.add_argument("--tasks", nargs="+", default=task_names())
     p.add_argument("--arms", nargs="+", default=[a for a in ARMS if a != "single"])
     p.set_defaults(fn=cmd_run)
