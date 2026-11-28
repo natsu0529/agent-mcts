@@ -32,7 +32,13 @@ from agent_mcts.adapters.base import AdapterError, AgentBackend, TokenUsage
 from agent_mcts.core.value import CommandValueFunction, Evaluation, ValueFunction
 
 _TEST_FILE = re.compile(r"<TestFile>\s*(.*?)\s*</TestFile>", re.IGNORECASE | re.DOTALL)
-_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)```", re.DOTALL)
+# A fence closes only on a line of its own, with at least as many backticks as it
+# opened with. Tests of Markdown or shell code put ``` inside string literals, and a
+# block that stopped there would be cut off mid-statement.
+_CODE_BLOCK = re.compile(
+    r"^(?P<fence>`{3,})[ \t]*[a-zA-Z0-9_+-]*[ \t]*\n(?P<body>.*?)^(?P=fence)`*[ \t]*$",
+    re.DOTALL | re.MULTILINE,
+)
 _FAILED_LINE = re.compile(r"(?m)^(?:FAILED|ERROR) .*$")
 
 _MAX_FAILURE_LINES = 20
@@ -100,7 +106,7 @@ class WriterResult(BaseModel):
 def parse_suite(text: str, *, index: int) -> GeneratedSuite | None:
     """The writer's reply as a suite placed at a fresh name in the directory it chose."""
     block = _CODE_BLOCK.search(text)
-    if block is None or not block.group(1).strip():
+    if block is None or not block.group("body").strip():
         return None
     tag = _TEST_FILE.search(text)
     chosen = PurePosixPath(tag.group(1).strip()) if tag else PurePosixPath("tests/test_x.py")
@@ -109,7 +115,22 @@ def parse_suite(text: str, *, index: int) -> GeneratedSuite | None:
     # Our own name, not the writer's: it must not overwrite a test the attempt has, and
     # several suites share the directory.
     name = f"test_agent_mcts_generated_{index}{chosen.suffix or '.py'}"
-    return GeneratedSuite(path=str(chosen.parent / name), content=block.group(1))
+    return GeneratedSuite(path=str(chosen.parent / name), content=block.group("body"))
+
+
+def syntax_error(suite: GeneratedSuite) -> str | None:
+    """Why a Python suite does not compile, or None.
+
+    A suite that does not compile fails on every attempt alike, so it cannot rank them;
+    better to report the writer's error than to score every attempt 0 on it.
+    """
+    if PurePosixPath(suite.path).suffix != ".py":
+        return None
+    try:
+        compile(suite.content, suite.path, "exec", dont_inherit=True)
+    except (SyntaxError, ValueError) as exc:
+        return str(exc)
+    return None
 
 
 def default_command(value_command: str) -> str | None:
@@ -180,6 +201,10 @@ class SuiteWriter:
         suite = parse_suite(result.summary, index=index)
         if suite is None:
             return spent.model_copy(update={"error": "test writer reply had no code block"})
+        if (problem := syntax_error(suite)) is not None:
+            return spent.model_copy(
+                update={"error": f"test writer's file does not compile: {problem[:300]}"}
+            )
         return spent.model_copy(update={"suite": suite})
 
 
