@@ -96,6 +96,63 @@ same `model_id`. Results made before 2026-11-27 have none.
 `results/` holds one JSON file per run and `REPORT.md`, the output of `report` for each
 measurement.
 
+### Seventh measurement: two harder tasks on claude-haiku-4-5
+
+2026-11-28, `claude-haiku-4-5` (Claude Code 2.1.332), five episodes, five repeats of every
+arm on two new tasks: `mdinline` (CommonMark inline emphasis and code spans) and
+`freebusy` (free slots across time zones and DST changes). Both were built for [#43]: an
+obvious approach exists that the visible tests accept and the hidden tests do not.
+
+The first `mdinline` runs with generated tests were discarded: the test writer's reply
+was cut at the first ``` anywhere, so all 15 suites, which test code spans, ended inside a
+string literal and scored every attempt 0 ([#48]). The runs below were made with that
+fix. 12 of the 15 new suites compiled; the other three were reported as writer errors and
+those runs were scored on the remaining suites.
+
+Hidden score of the answer each arm returned, mean of five runs:
+
+| how the five episodes are spent | mdinline | freebusy | cost per run, mdinline |
+|---|---:|---:|---:|
+| one attempt (each arm's first attempt) | 65-82% | 76-92% | |
+| search with the judge | 79% | 98% | $2.45 |
+| best-of-N: five first attempts, picked by generated tests | 87% | 100% | $2.05 |
+| sequential: one attempt, four revisions in a line | 84% | 93% | $4.74 |
+| search with generated tests | 89% | 100% | $3.01 |
+
+Paired by task and repeat on `mdinline` (difference in hidden-test points with its 95%
+interval, runs won, two-sided sign test):
+
+| | difference | runs | p |
+|---|---:|---|---:|
+| search - best-of-N | +1.8 (-2.4 to +6.0) | 3 - 2 | 1.00 |
+| search - sequential | +4.9 (+0.7 to +9.0) | 5 - 0 | 0.06 |
+| best-of-N - sequential | +3.1 (-0.2 to +6.4) | 4 - 1 | 0.38 |
+
+What it shows:
+
+- `freebusy` does not separate the arms: everything that picks among several attempts
+  by generated tests reached 100%. Its first attempts vary widely (two passed the
+  visible tests and 0% of the hidden ones), but five episodes were always enough.
+- On `mdinline`, the search with generated tests beat the sequential chain in all five
+  pairs. The interval excludes zero, but five pairs give p = 0.06 on the sign test, and
+  this is one task. It is a reason to run more repeats there, not a result yet. Search
+  and best-of-N were not distinguishable.
+- The sequential chain cost the most on `mdinline` ($4.74 against $3.01), as on semver
+  and duration: each revision resumes the session with its context.
+- The judge picked worse than the generated tests on both tasks. For pairs of attempts
+  with different hidden scores, the judge's reward put the better one higher in 49 of
+  87; generated tests did in 76 of 86.
+- For [#38]: with `first_attempt_stop = 0.8`, 6 of the 10 judge runs would have stopped
+  after the first attempt, giving 79% at $1.15 per run against 89% at $2.21 for the
+  full search. Most of the loss is one `freebusy` run whose first attempt passed the
+  visible tests and got a judge score of 0.90 while passing 0% of the hidden tests; the
+  search went on to 99%. This is the first time the threshold decided a run's outcome,
+  and here it cost points.
+
+[#38]: https://github.com/natsu0529/agent-mcts/issues/38
+[#43]: https://github.com/natsu0529/agent-mcts/issues/43
+[#48]: https://github.com/natsu0529/agent-mcts/pull/48
+
 ### Sixth measurement: sequential revision at the same budget
 
 2026-11-25, same setup as the fifth measurement: for each of the 20 `generated` runs on
