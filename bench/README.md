@@ -20,7 +20,9 @@ scored by tests the agent never sees.
 - Arms differ only in `.agent-mcts.toml`: `tests` (value = visible tests), `judge`
   (`judge = true`), `generated` (`generate_tests = true`), `best-of-n` and `sequential`.
 - The first attempt of any run (`n1`) is what a single agent run would have produced,
-  so it serves as the no-search baseline.
+  so it serves as the no-search baseline. The `single` arm makes only that attempt
+  (`max_nodes = 1`, whatever `--nodes` says), to see cheaply how hard a new task is.
+  It is left out unless named in `--arms`.
 - `best-of-n` is the same-budget baseline for `generated` ([#35]): every episode is a
   first attempt under the root (`root_width` = the budget, `max_depth = 1`), each told
   the approaches of the ones before it as in the search, so nothing is revised, and the
@@ -60,6 +62,15 @@ their tests from `results/suites/`:
 ```bash
 uv run python bench/run.py run --work /some/scratch/dir --arms best-of-n \
   --tasks semver duration --reps 10
+```
+
+To see how hard a new task is before spending a full run on it, make a few single
+attempts. Each costs about as much as a first attempt, a few tens of cents with
+`haiku`:
+
+```bash
+uv run python bench/run.py run --work /some/scratch/dir --arms single --tasks mytask --reps 5
+uv run python bench/run.py report --tasks mytask
 ```
 
 Runs made before `results/suites/` existed can have their tests copied in with

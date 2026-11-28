@@ -6,6 +6,7 @@ scores every node of every run.
 
     python bench/run.py validate                 # hidden tests pass on the references
     python bench/run.py run --work DIR [--reps 2] [--jobs 3] [--tasks ...] [--arms ...]
+    python bench/run.py run --work DIR --arms single --tasks NEW --reps 5  # how hard is it?
     python bench/run.py collect-suites --work DIR  # keep the generated tests of past runs
     python bench/run.py report [--tasks ...]
 
@@ -53,6 +54,10 @@ ARMS = {
     # The same budget again, spent on one chain: each attempt revises the one before it
     # with its failing test output, and no branching (#36).
     "sequential": "generate_tests = true\n",
+    # One attempt and nothing else, scored on the visible tests: a cheap way to see how
+    # hard a new task is (#43). Not in the default arms, since every run's first
+    # attempt already gives this.
+    "single": "judge = false\n",
 }
 # Arms that reuse the tests of the `generated` cell with the same task and repeat.
 # Each with how it spreads the `max_nodes` episodes over the tree.
@@ -240,6 +245,8 @@ def run_cell(task: str, arm: str, rep: int, work_root: Path, nodes: int, model: 
     extra: list[str] = []
     source_run: str | None = None
     value = ARMS[arm]
+    if arm == "single":
+        nodes = 1
     search = f"max_nodes = {nodes}\nmax_cost_usd = 50.0\n"
     if arm in BASELINE_ARMS:
         suites = suites_path(task, rep)
@@ -441,7 +448,7 @@ def main() -> None:
     p.add_argument("--nodes", type=int, default=5)
     p.add_argument("--model", default="haiku")
     p.add_argument("--tasks", nargs="+", default=task_names())
-    p.add_argument("--arms", nargs="+", default=list(ARMS))
+    p.add_argument("--arms", nargs="+", default=[a for a in ARMS if a != "single"])
     p.set_defaults(fn=cmd_run)
     p = sub.add_parser("collect-suites")
     p.add_argument("--work", required=True, help="the --work directory of the generated runs")
